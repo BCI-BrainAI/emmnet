@@ -1,0 +1,24 @@
+# MRI Encoder 설정
+# 값 출처: emmnet.pdf Sec 3.1(p.283)/Sec 4.2(p.286), Med3D Sec 3.2(p.6)
+# 상세 근거: ../docs/paper_notes.md, 설계 결정: ../docs/architecture.md
+
+input:
+  channels: 1              # T1 단일 채널 [EMMNet p.283]
+  spatial_size: 256         # zero-pad -> resize 256^3 [EMMNet p.283]
+  normalize: minmax_0_1     # [EMMNet p.283] (Med3D 원 사전학습은 z-score, Eq.2 p.4 — 불일치 주의)
+
+model:
+  backbone: resnet18_3d
+  seg_style: false          # true=block3/4 stride1+dilation2 (Med3D seg 전용, p.6). 체크포인트 확인 전 임시 false
+  proj_dim: 256             # [EMMNet p.286]
+  pretrained_path: ../pretrained/med3d_resnet18.pth   # 외부 공개 가중치(Med3D). TODO: 실제 파일 배치 후 경로 확정
+
+train:
+  # 전체 모델(EEG+MRI) 공용 세팅 [EMMNet Sec 4.2, p.286] — MRI encoder 단독 실험 시 참고용
+  optimizer: adamw
+  betas: [0.9, 0.999]
+  batch_size: 16
+  loss: focal
+  focal_alpha: 0.25
+  focal_gamma: 2
+  checkpoint_dir: ../checkpoints   # 우리가 학습한 결과물 저장 위치 (pretrained/ 와 분리)
