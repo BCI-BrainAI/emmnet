@@ -1,6 +1,7 @@
-"""MRI Encoder 초안 단위 테스트 (shape/forward 검증용, 실제 데이터 불필요).
+"""MRI Encoder 단위 테스트 (shape/forward 검증용, 실제 데이터 불필요).
 
-경로 설정은 conftest.py에서 일괄 처리 (pip install -e . 했다면 그것도 불필요).
+경로 설정: 저장소 루트에서 `PYTHONPATH=src pytest` 등으로 src/를 sys.path에
+추가해야 함 (pyproject.toml/conftest.py 없음 -- 2026-09 리비전에서 제거됨).
 """
 import pytest
 import torch
@@ -9,10 +10,9 @@ from models.mri_encoder import MRIEncoder
 from models.resnet3d import ResNet3DBackbone
 
 
-@pytest.mark.parametrize("seg_style", [False, True])
-def test_mri_encoder_forward_shape(seg_style):
+def test_mri_encoder_forward_shape():
     """작은 볼륨(64^3)으로 forward 후 (B, proj_dim) shape 확인. 256^3은 CI에 과함."""
-    model = MRIEncoder(in_channels=1, proj_dim=256, seg_style=seg_style)
+    model = MRIEncoder(in_channels=1, proj_dim=256)
     model.eval()
     x = torch.randn(2, 1, 64, 64, 64)
     with torch.no_grad():
@@ -31,13 +31,24 @@ def test_mri_encoder_feature_map_for_cam():
     assert feat_map.shape[1] == 512
 
 
-def test_backbone_seg_style_changes_output_resolution():
-    """seg_style=True면 block3/4가 다운샘플하지 않아 표준 대비 출력 해상도가 커야 함."""
+def test_backbone_fixed_downsample_matches_med3d():
+    """MedicalNet resnet-18 고정 구조 회귀 테스트: stem+layer1/2에서만 다운샘플,
+    layer3/4는 dilation으로 해상도 유지 -> 64^3 입력이 8^3으로 줄어드는지 확인
+    (256^3 기준으로는 32^3). 값이 바뀌면 Med3D 아키텍처와 어긋난 것.
+    """
+    backbone = ResNet3DBackbone(in_channels=1)
+    backbone.eval()
     x = torch.randn(1, 1, 64, 64, 64)
-    standard = ResNet3DBackbone(in_channels=1, seg_style=False)
-    seg = ResNet3DBackbone(in_channels=1, seg_style=True)
-    standard.eval(); seg.eval()
     with torch.no_grad():
-        out_std = standard(x)
-        out_seg = seg(x)
-    assert out_seg.shape[-1] > out_std.shape[-1]
+        out = backbone(x)
+    assert out.shape == (1, 512, 8, 8, 8)
+
+
+def test_backbone_shortcut_a_has_no_learnable_params():
+    """resnet-18 pretrained가 shortcut_type='A'로 학습됐으므로, 다운샘플 경로에
+    학습 파라미터가 없어야 pretrained 키 매핑과 어긋나지 않음."""
+    backbone = ResNet3DBackbone(in_channels=1)
+    downsample_params = [
+        p for name, p in backbone.named_parameters() if "downsample" in name
+    ]
+    assert downsample_params == []

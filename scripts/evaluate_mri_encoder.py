@@ -24,7 +24,6 @@ def main() -> None:
     model = MRIEncoder(
         in_channels=config["input"]["channels"],
         proj_dim=config["model"]["proj_dim"],
-        seg_style=config["model"]["seg_style"],
     )
     metrics = evaluate(model=model, config=config, checkpoint_path=args.checkpoint)
     for name, value in metrics.items():

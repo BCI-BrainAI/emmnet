@@ -60,7 +60,7 @@ emmnet/
 
 ## 미해결 / TODO
 
-- [ ] Med3D 공식 pretrained 체크포인트 입수 후 `seg_style` 플래그(stride/dilation) 검증
+- [ ] Med3D 공식 pretrained 체크포인트(`resnet_18.pth`, 23-dataset) 입수 후 `load_med3d_pretrained()` missing/unexpected keys 실측 검증 — 아키텍처 자체는 github.com/Tencent/MedicalNet 공식 구현과 대조 완료 (`src/models/resnet3d.py` 참고: layer3 dilation=2/layer4 dilation=4 고정, shortcut_type='A')
 - [ ] EEG encoder, fusion(mid-level concat) 구현
 - [ ] MRI 데이터셋 subject-level split 설계 (leakage 방지, CNN12 재현 때와 동일 원칙 적용)
 - [ ] 원 저장소 접근 권한 확보 시 구조/가중치 재검증

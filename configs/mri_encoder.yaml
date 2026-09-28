@@ -8,8 +8,7 @@ input:
   normalize: minmax_0_1     # [EMMNet p.283] (Med3D 원 사전학습은 z-score, Eq.2 p.4 — 불일치 주의)
 
 model:
-  backbone: resnet18_3d
-  seg_style: false          # true=block3/4 stride1+dilation2 (Med3D seg 전용, p.6). 체크포인트 확인 전 임시 false
+  backbone: resnet18_3d     # MedicalNet resnet-18 고정 구조(layer3 d=2, layer4 d=4, shortcut A) -- 분기 없음. 근거: resnet3d.py 모듈 docstring
   proj_dim: 256             # [EMMNet p.286]
   pretrained_path: ../pretrained/med3d_resnet18.pth   # 외부 공개 가중치(Med3D). TODO: 실제 파일 배치 후 경로 확정
 
