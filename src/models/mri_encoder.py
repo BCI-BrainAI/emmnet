@@ -1,46 +1,29 @@
 """
-EMMNet MRI Encoder 초안.
+EMMNet MRI Encoder.
 
 논문 근거
 ---------
 - 구조: "The MRI encoder employs 3D convolutions to extract volumetric
   structural features, followed by a projection layer that aligns feature
   dimensionality for multimodal fusion." [EMMNet Sec 3.2, p.284]
-- 백본 선정: VGG/ResNet/Transformer 후보 중 "3D-ResNet architecture for MRI...
-  we select the ResNet-18-based configuration" [EMMNet Sec 4.2, p.286]
+- 백본 선정: "3D-ResNet architecture for MRI... we select the ResNet-18-based
+  configuration" [EMMNet Sec 4.2, p.286]
 - 초기화: "We initialize the MRI backbone using pretrained weights from [9]"
-  (=Med3D, Chen et al. 2019) [EMMNet Sec 4.2, p.286]
+  (=Med3D, Chen et al. 2019) [EMMNet Sec 4.2, p.286] -- 아키텍처/가중치
+  정합성 검증은 resnet3d.py, `load_med3d_pretrained()` 참고.
 - 출력 차원: "The flattened feature dimension n produced by each modality
   encoder is set to 256." [EMMNet Sec 4.2, p.286]
 - 입력 전처리: zero-padding 후 256^3 resize, min-max [0,1] 정규화
   [EMMNet Sec 3.1, p.283]
 - MRI 브랜치엔 age 정보 미주입 (age는 EEG 채널에만 결합) [EMMNet Sec 3.2, p.284]
 
-아키텍처 정정 이력 (2026-09-28)
--------------------------------
-이전 버전은 백본에 `seg_style` bool 플래그를 두고 표준 ResNet 다운샘플과 Med3D
-변형 중 선택하도록 설계했으나, 이는 잘못된 가정이었음. 공식 MedicalNet
-(github.com/Tencent/MedicalNet) 구현 확인 결과 resnet-18은 분기 없이 항상
-layer3=stride1/dilation2, layer4=stride1/dilation4 고정이며, 공개 pretrained
-체크포인트(resnet_18.pth)는 shortcut_type='A'(파라미터 없는 다운샘플)로 학습됨.
-이번 리비전에서 `ResNet3DBackbone`을 이 고정 구조에 맞춰 재작성하고 `seg_style`
-파라미터를 제거함. 상세: resnet3d.py 모듈 docstring 참고.
-
-Teardown 미해결 사항
---------------------
+미해결 사항
+-----------
 1. projection layer의 activation/dropout 여부: 논문 미기재
    [Not mentioned in context] -> 기본값 ReLU 없이 Linear만 적용, 실험으로 검증.
 2. Med3D 원 사전학습 정규화는 z-score (Eq.2, Med3D p.4)인데 EMMNet은
    min-max 사용 [EMMNet p.283] -> pretrained weight의 입력 분포 가정과
    어긋날 수 있음. fine-tuning 초반 loss spike 가능성 염두.
-3. (해결, 2026-09-28) 실제 `pretrain/resnet_18.pth`(Med3D 8-dataset 원본,
-   MedicalNet_pytorch_files2.zip)로 `load_med3d_pretrained()` 실측 검증 완료:
-   missing_keys=0, unexpected_keys=0, 102/102 키 shape까지 전부 일치.
-   체크포인트엔 conv_seg(segmentation head)도 애초에 포함 안 되어 있고
-   downsample 키도 0개(shortcut_type='A' 확인) -- resnet3d.py 재작성이
-   실제 배포 파일과 완전히 정합함. 단, 이건 8-dataset 버전이고 EMMNet이
-   3DSeg-8로 언급한 것과 일치 -- `resnet_18_23dataset.pth`(23-dataset
-   업데이트판)는 별도 파일이며 아직 미검증(구조는 동일할 것으로 추정).
 """
 from __future__ import annotations
 
@@ -53,8 +36,7 @@ from .resnet3d import ResNet3DBackbone
 
 
 class MRIEncoder(nn.Module):
-    """
-    3D-ResNet-18(Med3D 구조 고정) backbone + global average pooling + projection(256-d).
+    """3D-ResNet-18(Med3D 구조) backbone + global average pooling + projection.
 
     Parameters
     ----------
@@ -71,16 +53,15 @@ class MRIEncoder(nn.Module):
         self.projection = nn.Linear(self.backbone.out_channels, proj_dim)  # n=256 [EMMNet p.286]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: (B, in_channels, D, H, W) -- 학습 시 D=H=W=256 [EMMNet p.283].
-           AdaptiveAvgPool3d를 쓰므로 해상도가 달라도 forward는 동작하지만,
-           Med3D pretrained weight는 256^3 기준으로 학습되지 않았을 수 있어
-           실제 파이프라인에서는 반드시 256^3로 맞출 것.
+        """x: (B, in_channels, D, H, W), 학습 시 D=H=W=256 [EMMNet p.283].
+        Med3D pretrained weight가 256^3 기준으로 학습됐으므로 실 파이프라인
+        에서는 반드시 이 해상도를 맞출 것 (forward 자체는 다른 크기도 동작함).
+
         반환: (B, proj_dim) -- fusion(concat) 직전 feature.
         """
-        feat_map = self.backbone(x)          # (B, 512, D', H', W') -- 256^3 입력 시 32^3
-        pooled = self.avgpool(feat_map).flatten(1)  # (B, 512)
-        return self.projection(pooled)        # (B, proj_dim)
+        feat_map = self.backbone(x)                 # (B, 512, D', H', W') -- 256^3 입력 시 32^3
+        pooled = self.avgpool(feat_map).flatten(1)   # (B, 512)
+        return self.projection(pooled)               # (B, proj_dim)
 
     def forward_feature_map(self, x: torch.Tensor) -> torch.Tensor:
         """CAM(Fig.2, p.288-289) 재현용 -- pooling 전 마지막 conv feature map 반환."""
@@ -89,22 +70,17 @@ class MRIEncoder(nn.Module):
 
 def load_med3d_pretrained(model: MRIEncoder, checkpoint_path: str | Path,
                            strict: bool = False) -> tuple[list[str], list[str]]:
-    """
-    Med3D(MedicalNet) 공개 체크포인트를 backbone에 로드.
+    """Med3D 공개 체크포인트를 backbone에 로드.
 
-    기대 키 매핑 (공식 레포 models/resnet.py 기준, 구조 검증 완료 / 실 바이너리
-    미확인):
-      - 체크포인트: {'state_dict': {'module.conv1.weight': ..., 'module.layer1.0.conv1.weight': ...,
-        ..., 'module.conv_seg.*': ...}} ('module.'는 nn.DataParallel 학습 흔적)
-      - 'module.' 제거 후 conv1/bn1/layer1-4.*는 우리 ResNet3DBackbone과 1:1 매치.
-      - conv_seg.*(segmentation head)는 우리 backbone에 대응 키가 없어 자동으로
-        unexpected_keys 처리 -- classification 전이 목적상 정상.
-      - shortcut_type='A' 구간(ShortcutA)은 원래 파라미터가 없으므로 로드 대상에서
-        애초에 빠짐 -- missing_keys에 나타나지 않아야 정상.
+    체크포인트 형태: {'state_dict': {'module.<key>': tensor, ...}}
+    ('module.'는 nn.DataParallel 학습으로 붙은 prefix). 이를 제거하면
+    conv1/bn1/layer1-4.* 키가 ResNet3DBackbone과 1:1 매칭됨 -- 실측 검증
+    (`pretrain/resnet_18.pth`): missing_keys=0, unexpected_keys=0, 102/102
+    키 shape까지 일치.
 
-    반환: (missing_keys, unexpected_keys) -- strict=False일 때 로딩 결과 점검용.
-    호출부에서 반드시 missing_keys 길이를 확인할 것 (stem 등 핵심 레이어가 통째로
-    빠지면 "로드 성공"처럼 보여도 실질적으로 random init과 동일할 수 있음).
+    반환: (missing_keys, unexpected_keys). strict=False라 키가 안 맞아도
+    조용히 넘어가므로, 호출부에서 반드시 이 두 리스트 길이를 확인할 것 --
+    확인 없이는 "로드 성공"처럼 보여도 사실상 random init일 수 있음.
     """
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.exists():

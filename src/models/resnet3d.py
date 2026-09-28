@@ -1,23 +1,16 @@
 """
-3D ResNet 공통 빌딩 블록 -- MedicalNet(Med3D, Chen et al. 2019) 공개 구현 기준.
+3D-ResNet-18 backbone -- MedicalNet(Med3D, Chen et al. 2019) 공개 구현과 구조 동일.
 
-검증 출처: github.com/Tencent/MedicalNet models/resnet.py (2026-09-28 클론 확인)
+검증: github.com/Tencent/MedicalNet models/resnet.py 대조 + 실제 배포 체크포인트
+`pretrain/resnet_18.pth`로 key/shape 100% 일치 확인 (missing=0, unexpected=0).
 
 Med3D가 2D ResNet을 3D 의료영상용으로 변형한 지점 [MedicalNet models/resnet.py]:
   1) stem conv 입력 채널 3 -> 1                                    [L126-132]
   2) 모든 2D conv -> 3D                                            [전역]
-  3) layer3/layer4는 항상 stride=1 + dilation(각각 2, 4) 고정      [L140-143]
-     -> "segmentation 전용 옵션"이 아니라 공식 구현에 분기 자체가 없음.
-        classification 전이 시에도 이 구조 그대로 써야 Med3D pretrained
-        weight와 아키텍처가 일치함.
+  3) layer3=stride1/dilation2, layer4=stride1/dilation4 고정        [L140-143]
+     (분기 없는 유일한 구조 -- classification 전이 시에도 그대로 사용)
   4) resnet-18/34 공개 체크포인트는 shortcut_type='A'
      (파라미터 없는 avg_pool3d+zero-pad shortcut)                  [README L26-27]
-     -> resnet-10/50/101/... 은 'B'(학습 가능 1x1 conv) 사용, 우리는 18만 다룸.
-
-Teardown(정정 이력, 2026-09-28): 이전 버전은 `seg_style` bool로 표준 stride-2
-다운샘플과 Med3D 변형을 토글하도록 설계했으나 이는 잘못된 가정이었음. 실제로는
-토글 대상 자체가 없고, resnet-18 pretrained weight를 쓰려면 항상 위 고정 구조를
-써야 함. 이번 리비전에서 `seg_style` 제거.
 """
 from __future__ import annotations
 
@@ -27,10 +20,14 @@ import torch.nn.functional as F
 
 
 class BasicBlock3D(nn.Module):
-    """표준 3D ResNet BasicBlock (2x Conv3d+BN3d, residual add).
+    """3D ResNet residual 연산 단위 (2x Conv3d+BN3d + skip add).
 
-    conv1/bn1/conv2/bn2/downsample 네이밍은 MedicalNet 체크포인트의 state_dict
-    키(`layer{1..4}.{i}.conv1.weight` 등)와 그대로 맞춰 pretrained 로딩을 보장.
+    conv1이 차원 변경(in_channels->out_channels, stride)을 전담하고, conv2는
+    같은 차원(in=out, stride=1)에서 특징만 정제 -- 그래야 conv2 출력과
+    identity/downsample(x)의 shape이 마지막 덧셈에서 맞음.
+
+    conv1/bn1/conv2/bn2/downsample 이름은 MedicalNet state_dict 키
+    (`layer{1..4}.{i}.conv1.weight` 등)와 그대로 맞춰 pretrained 로딩을 보장.
     """
 
     expansion = 1
@@ -59,12 +56,14 @@ class BasicBlock3D(nn.Module):
 
 
 class ShortcutA(nn.Module):
-    """MedicalNet shortcut_type='A': 학습 파라미터 없는 다운샘플.
+    """identity를 그대로 못 쓰는 구간(stride!=1 또는 채널 증가)의 skip 경로.
 
-    avg_pool3d(kernel=1, stride=stride)로 공간 해상도만 줄이고, 채널 증가분은
-    0으로 zero-pad. resnet-18/34 공개 체크포인트가 이 방식으로 학습됨
-    [MedicalNet models/resnet.py L26-37, README L26-27] -- 즉 이 경로엔 애초에
-    대응되는 pretrained 파라미터가 존재하지 않음(로드 대상에서 항상 제외됨).
+    학습 파라미터 없이 avg_pool3d(kernel=1, stride)로 spatial만 줄이고, 채널
+    증가분은 0으로 zero-pad -- shape만 맞추는 결정론적 연산.
+
+    resnet-18/34 공개 체크포인트가 이 방식으로 학습됨
+    [MedicalNet models/resnet.py L26-37, README L26-27] -- 대응하는 pretrained
+    파라미터가 애초에 존재하지 않는 경로.
     """
 
     def __init__(self, out_channels: int, stride: int):
@@ -84,10 +83,14 @@ class ShortcutA(nn.Module):
 def make_layer(in_channels: int, out_channels: int, blocks: int,
                stride: int = 1, dilation: int = 1,
                shortcut_type: str = "A") -> nn.Sequential:
-    """BasicBlock3D `blocks`개를 쌓아 하나의 ResNet stage 구성.
+    """BasicBlock3D `blocks`개로 ResNet stage 하나를 구성.
+
+    첫 block만 차원 변경(in_channels->out_channels, stride)을 맡고 필요 시
+    downsample을 가짐; 이후 block들은 전부 in=out, stride=1이라 downsample 없음.
 
     shortcut_type: 'A'(파라미터 없음, resnet-18/34 pretrained 기준) | 'B'(학습
-    가능 1x1 conv+BN, resnet-10/50+ 기준) [MedicalNet README L25-28].
+    가능 1x1 conv+BN, resnet-10/50+ 기준) [MedicalNet README L25-28]. 이 파일이
+    실제로 쓰는 건 resnet-18 = 'A'뿐 -- 'B' 분기는 다른 depth와의 구조 대응용.
     """
     downsample = None
     if stride != 1 or in_channels != out_channels:
@@ -105,24 +108,21 @@ def make_layer(in_channels: int, out_channels: int, blocks: int,
 
 
 class ResNet3DBackbone(nn.Module):
-    """
-    3D-ResNet-18 backbone, MedicalNet(Med3D) resnet-18 공개 구현과 구조 동일
-    [MedicalNet models/resnet.py L112-176].
+    """3D-ResNet-18 backbone (stem + layer1-4), MedicalNet resnet-18 공식 구현과
+    구조 동일 [MedicalNet models/resnet.py L112-176].
 
-    고정 구성 (분기 없음):
-      stem  : Conv3d(k7,s2) -> BN -> ReLU -> MaxPool3d(k3,s2)
-      layer1: stride1, dilation1               (64ch)
-      layer2: stride2, dilation1               (128ch)
-      layer3: stride1, dilation2               (256ch)  <- Med3D 고정값
-      layer4: stride1, dilation4               (512ch)  <- Med3D 고정값
-      shortcut_type='A' (파라미터 없는 다운샘플, resnet-18 pretrained 기준)
+    stem  : Conv3d(k7,s2) -> BN -> ReLU -> MaxPool3d(k3,s2)
+    layer1: stride1, dilation1  (64ch)
+    layer2: stride2, dilation1  (128ch)
+    layer3: stride1, dilation2  (256ch)
+    layer4: stride1, dilation4  (512ch)
+    shortcut_type='A' 고정
 
     forward 출력: (B, 512, D', H', W'). 256^3 입력 기준 D'=H'=W'=32
-    (stem/layer1/layer2에서만 실제 다운샘플, layer3/4는 dilation으로 해상도 유지).
+    (stem/layer2에서만 실제 다운샘플, layer3/4는 dilation으로 해상도 유지).
 
     속성 이름(conv1/bn1/maxpool/layer1-4)은 MedicalNet state_dict 키와 정확히
-    일치시켜 `load_med3d_pretrained()`에서 `module.` prefix만 벗기면 바로
-    매칭되게 함(이전 버전의 `self.stem` Sequential 래핑을 제거한 이유).
+    일치 -- `load_med3d_pretrained()`가 `module.` prefix만 벗기면 바로 매칭됨.
     """
 
     def __init__(self, in_channels: int = 1):
@@ -139,6 +139,8 @@ class ResNet3DBackbone(nn.Module):
         self.out_channels = 512
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # 스테이지를 순서대로 통과시키기만 함 -- residual 덧셈은 각 layerN
+        # (nn.Sequential of BasicBlock3D)이 내부적으로 처리, 여기선 안 함.
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
