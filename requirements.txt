@@ -1,0 +1,7 @@
+# 개발 편의용 참고 목록. 정식 설치는 pyproject.toml 기준:
+#   pip install -e ".[dev]"
+torch>=2.1
+numpy>=1.24
+pyyaml>=6.0
+nibabel>=5.1        # MRI 파일(NIfTI) I/O — mri_dataset.py 구현 시 사용
+pytest>=7.4

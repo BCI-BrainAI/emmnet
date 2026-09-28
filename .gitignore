@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+pretrained/*
+!pretrained/.gitkeep
+checkpoints/*
+!checkpoints/.gitkeep
+data/raw/*
+data/interim/*
+data/processed/*
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+outputs/*
+!outputs/.gitkeep
+.DS_Store
+_to_delete/
