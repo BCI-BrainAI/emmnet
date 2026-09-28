@@ -52,3 +52,25 @@ def test_backbone_shortcut_a_has_no_learnable_params():
         p for name, p in backbone.named_parameters() if "downsample" in name
     ]
     assert downsample_params == []
+
+
+# --- 실제 Med3D 체크포인트 회귀 테스트 -------------------------------------
+# pretrained/resnet_18.pth는 용량(126MB) 때문에 .gitignore 대상 -- 로컬에
+# 파일이 없는 환경(다른 팀원 PC, CI)에서는 자동 skip. 2026-09-28 최초 실측
+# 검증: missing_keys=0, unexpected_keys=0 (Med3D 8-dataset 원본 기준).
+import os
+from pathlib import Path
+
+from models.mri_encoder import load_med3d_pretrained
+
+_CKPT = Path(__file__).resolve().parent.parent / "pretrained" / "resnet_18.pth"
+
+
+@pytest.mark.skipif(not _CKPT.exists(), reason="pretrained/resnet_18.pth 없음 (.gitignore 대상, 로컬에 직접 배치 필요)")
+def test_load_real_med3d_checkpoint_has_no_missing_keys():
+    """실제 Med3D resnet_18.pth 로드 시 missing/unexpected keys가 0이어야 함
+    -- resnet3d.py 아키텍처가 공식 배포 체크포인트와 어긋나면 이 테스트가 깨짐."""
+    model = MRIEncoder(in_channels=1, proj_dim=256)
+    missing, unexpected = load_med3d_pretrained(model, _CKPT, strict=False)
+    assert missing == [], f"missing_keys가 있음: {missing}"
+    assert unexpected == [], f"unexpected_keys가 있음: {unexpected}"

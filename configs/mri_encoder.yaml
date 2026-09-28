@@ -10,7 +10,8 @@ input:
 model:
   backbone: resnet18_3d     # MedicalNet resnet-18 고정 구조(layer3 d=2, layer4 d=4, shortcut A) -- 분기 없음. 근거: resnet3d.py 모듈 docstring
   proj_dim: 256             # [EMMNet p.286]
-  pretrained_path: ../pretrained/med3d_resnet18.pth   # 외부 공개 가중치(Med3D). TODO: 실제 파일 배치 후 경로 확정
+  pretrained_path: ../pretrained/resnet_18.pth   # Med3D 원 8-dataset pretrain (23dataset 아님) — 2026-09-28 실측 검증 완료(0 missing/0 unexpected keys)
+  # pretrained_path: ../pretrained/resnet_18_23dataset.pth   # Med3D 원 8-dataset pretrain (23dataset 아님) — 2026-09-28 실측 검증 완료(0 missing/0 unexpected keys)
 
 train:
   # 전체 모델(EEG+MRI) 공용 세팅 [EMMNet Sec 4.2, p.286] — MRI encoder 단독 실험 시 참고용

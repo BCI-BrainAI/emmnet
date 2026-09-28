@@ -33,10 +33,14 @@ Teardown 미해결 사항
 2. Med3D 원 사전학습 정규화는 z-score (Eq.2, Med3D p.4)인데 EMMNet은
    min-max 사용 [EMMNet p.283] -> pretrained weight의 입력 분포 가정과
    어긋날 수 있음. fine-tuning 초반 loss spike 가능성 염두.
-3. 실제 `resnet_18.pth`(23-dataset 버전) 바이너리를 아직 확보하지 못해
-   `load_med3d_pretrained()`의 키 매핑을 실 데이터로 검증하지 못함 -- 구조
-   비교는 공개 소스코드 기준으로 완료. 체크포인트 입수 후 missing/unexpected
-   keys 로그로 최종 확인 필요.
+3. (해결, 2026-09-28) 실제 `pretrain/resnet_18.pth`(Med3D 8-dataset 원본,
+   MedicalNet_pytorch_files2.zip)로 `load_med3d_pretrained()` 실측 검증 완료:
+   missing_keys=0, unexpected_keys=0, 102/102 키 shape까지 전부 일치.
+   체크포인트엔 conv_seg(segmentation head)도 애초에 포함 안 되어 있고
+   downsample 키도 0개(shortcut_type='A' 확인) -- resnet3d.py 재작성이
+   실제 배포 파일과 완전히 정합함. 단, 이건 8-dataset 버전이고 EMMNet이
+   3DSeg-8로 언급한 것과 일치 -- `resnet_18_23dataset.pth`(23-dataset
+   업데이트판)는 별도 파일이며 아직 미검증(구조는 동일할 것으로 추정).
 """
 from __future__ import annotations
 
