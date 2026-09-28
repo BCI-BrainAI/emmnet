@@ -2,8 +2,7 @@
 MRI Dataset.
 
 전처리 스펙 (구현 시 반드시 반영, 논문 근거):
-- zero-padding 후 256^3 resize (enclosing-cube crop 방식보다 성능 우수했다고
-  보고됨) [EMMNet Sec 3.1, p.283]
+- zero-padding 후 256^3 resize (enclosing-cube crop 방식보다 성능 우수했다고 보고됨) [EMMNet Sec 3.1, p.283]
 - intensity: min-max normalization to [0, 1] (subject 단위) [EMMNet Sec 3.1, p.283]
   * Med3D 원 사전학습은 percentile truncation(0.5~99.5) + z-score였음
     [Med3D Eq.2, p.4] — 정규화 방식 불일치 인지하고 진행할 것.
