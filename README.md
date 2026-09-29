@@ -17,7 +17,7 @@ pip install -e ".[dev]"
 - 원 저자 저장소(`github.com/BCI-BrainAI/emmnet`) `origin`으로 연결은
   해뒀으나 `git fetch` 여전히 인증 실패, API도 404 — 실제 접근은 미해결.
 - 논문 2편(`emmnet.pdf`, Med3D) 기반 자체 재현 진행 중.
-- `models/mri_encoder.py`: MRI Encoder 구현 완료, 단위테스트 4/4 통과
+- `src/models/mri/mri_encoder.py`: MRI Encoder 구현 완료, 단위테스트 통과
   (`tests/test_mri_encoder.py`). 파라미터 수 33.29M ≈ 논문 Table 4
   "MRI only" 33.3M — 채널 구조 정합성 검증 완료.
 - EEG encoder / fusion / dataset / trainer / evaluate: 함수·클래스
@@ -40,15 +40,18 @@ emmnet/
 ├── docs/                       # (현재 비어있음 — 필요 시 설계 노트 추가)
 ├── src/
 │   ├── models/
-│   │   ├── resnet3d.py         # 3D ResNet BasicBlock/backbone 공통 모듈
-│   │   ├── mri_encoder.py      # MRI Encoder (구현 완료)
+│   │   ├── mri/                # MRI 파트
+│   │   │   ├── resnet3d.py     # 3D ResNet BasicBlock/backbone 공통 모듈
+│   │   │   └── mri_encoder.py  # MRI Encoder (구현 완료)
 │   │   ├── eeg_encoder.py      # TODO
 │   │   └── fusion.py           # TODO (mid-level concat 이 논문 최종 채택안)
 │   ├── data/
 │   │   ├── mri_dataset.py      # TODO
 │   │   └── eeg_dataset.py      # TODO
 │   ├── training/trainer.py     # TODO
-│   └── evaluation/evaluate.py  # TODO
+│   └── evaluation/
+│       ├── cam.py              # CAM 계산
+│       └── evaluate.py         # TODO
 ├── tests/test_mri_encoder.py   # MRI Encoder forward pass 테스트
 └── outputs/                    # 로그/그림/예측 등 결과물 — git 미추적
 ```

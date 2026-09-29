@@ -1,24 +1,18 @@
-# MRI Encoder 설정
-# 값 출처: emmnet.pdf Sec 3.1(p.283)/Sec 4.2(p.286), Med3D Sec 3.2(p.6)
-# 상세 근거: ../docs/paper_notes.md, 설계 결정: ../docs/architecture.md
-
 input:
-  channels: 1              # T1 단일 채널 [EMMNet p.283]
-  spatial_size: 256         # zero-pad -> resize 256^3 [EMMNet p.283]
-  normalize: minmax_0_1     # [EMMNet p.283] (Med3D 원 사전학습은 z-score, Eq.2 p.4 — 불일치 주의)
+  channels: 1
+  spatial_size: 256
+  normalize: minmax_0_1   # TODO: Med3D pretrained 가중치와 정규화 방식이 다를 수 있음 -- 확인 필요
 
 model:
-  backbone: resnet18_3d     # MedicalNet resnet-18 고정 구조(layer3 d=2, layer4 d=4, shortcut A) -- 분기 없음. 근거: resnet3d.py 모듈 docstring
-  proj_dim: 256             # [EMMNet p.286]
-  pretrained_path: ../pretrained/resnet_18.pth   # Med3D 원 8-dataset pretrain (23dataset 아님) — 2026-09-28 실측 검증 완료(0 missing/0 unexpected keys)
-  # pretrained_path: ../pretrained/resnet_18_23dataset.pth   # Med3D 원 8-dataset pretrain (23dataset 아님) — 2026-09-28 실측 검증 완료(0 missing/0 unexpected keys)
+  backbone: resnet18_3d
+  proj_dim: 256
+  pretrained_path: ../pretrained/resnet_18.pth
 
 train:
-  # 전체 모델(EEG+MRI) 공용 세팅 [EMMNet Sec 4.2, p.286] — MRI encoder 단독 실험 시 참고용
   optimizer: adamw
   betas: [0.9, 0.999]
   batch_size: 16
   loss: focal
   focal_alpha: 0.25
   focal_gamma: 2
-  checkpoint_dir: ../checkpoints   # 우리가 학습한 결과물 저장 위치 (pretrained/ 와 분리)
+  checkpoint_dir: ../checkpoints

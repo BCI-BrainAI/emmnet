@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""MRI Encoder 학습 CLI. Trainer 본체는 아직 TODO — 구조(설정 로드/모델 생성/가중치 로드)만 우선 마련.
-
-사전 조건: 저장소 루트에서 `pip install -e .` 실행 (pyproject.toml).
-"""
+"""CLI: MRI encoder 학습."""
 from __future__ import annotations
 
 import argparse
@@ -10,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from models.mri_encoder import MRIEncoder, load_med3d_pretrained
+from models.mri.mri_encoder import MRIEncoder, load_med3d_pretrained
 from training.trainer import train
 
 
@@ -33,7 +30,7 @@ def main() -> None:
         missing, unexpected = load_med3d_pretrained(model, pretrained_path)
         print(f"[INFO] pretrained 로드 완료. missing={len(missing)} unexpected={len(unexpected)}")
     else:
-        print(f"[WARN] pretrained checkpoint 없음: {pretrained_path} — 랜덤 초기화로 진행")
+        print(f"[WARN] pretrained checkpoint 없음: {pretrained_path} -- 랜덤 초기화로 진행")
 
     train(model=model, config=config, checkpoint_dir=args.checkpoint_dir)
 

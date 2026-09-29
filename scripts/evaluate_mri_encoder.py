@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from models.mri_encoder import MRIEncoder
+from models.mri.mri_encoder import MRIEncoder
 from evaluation.evaluate import evaluate
 
 
