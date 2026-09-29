@@ -51,6 +51,19 @@ class ShortcutA(nn.Module):
         return out
 
 
+def make_stem(in_channels: int) -> tuple[nn.Conv3d, nn.BatchNorm3d, nn.ReLU, nn.MaxPool3d]:
+    """입력 -> 64ch, 공간 1/4 축소하는 stem 구성요소 (conv1, bn1, relu, maxpool).
+
+    모듈 하나로 묶지 않고 튜플로 반환한다: backbone에 conv1/bn1으로 바로 붙어야
+    state_dict key가 Med3D 체크포인트(conv1.weight, bn1.*)와 일치한다.
+    """
+    conv1 = nn.Conv3d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+    bn1 = nn.BatchNorm3d(64)
+    relu = nn.ReLU(inplace=True)
+    maxpool = nn.MaxPool3d(kernel_size=3, stride=2, padding=1)
+    return conv1, bn1, relu, maxpool
+
+
 def make_layer(in_channels: int, out_channels: int, blocks: int,
                stride: int = 1, dilation: int = 1,
                shortcut_type: str = "A") -> nn.Sequential:
@@ -79,10 +92,7 @@ class ResNet3DBackbone(nn.Module):
 
     def __init__(self, in_channels: int = 1):
         super().__init__()
-        self.conv1 = nn.Conv3d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.bn1 = nn.BatchNorm3d(64)
-        self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool3d(kernel_size=3, stride=2, padding=1)
+        self.conv1, self.bn1, self.relu, self.maxpool = make_stem(in_channels)
 
         self.layer1 = make_layer(64, 64, blocks=2, stride=1, dilation=1)
         self.layer2 = make_layer(64, 128, blocks=2, stride=2, dilation=1)
@@ -90,11 +100,15 @@ class ResNet3DBackbone(nn.Module):
         self.layer4 = make_layer(256, 512, blocks=2, stride=1, dilation=4)
         self.out_channels = 512
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward_stem(self, x: torch.Tensor) -> torch.Tensor:
+        """stem 통과: (B,C,D,H,W) -> (B,64,D/4,H/4,W/4)."""
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
-        x = self.maxpool(x)
+        return self.maxpool(x)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.forward_stem(x)
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
