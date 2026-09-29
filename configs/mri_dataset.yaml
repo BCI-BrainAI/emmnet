@@ -6,14 +6,14 @@
 
 # NIfTI(.nii 또는 .nii.gz) 영상 루트. 실행 전 실제 경로 입력 필수.
 # 예시: /data/ADNI (예시이며 실제 서버 경로가 아님)
-raw_dir: null
+raw_dir: /home/neurodeep/ADNI/ADNI
 
 # 상세 XML 메타데이터 루트. null이면 raw_dir 내부에서 XML을 탐색한다.
 # XML이 별도 위치에 있으므로 서버에 복사/마운트한 경로를 지정하는 것을 권장.
-metadata_dir: null
+metadata_dir: /home/neurodeep/ADNI/metadata/ADNI
 
 # 기존 결과 덮어쓰기를 막기 위해 새 폴더 또는 빈 폴더만 사용 가능.
-out_dir: ../data/processed/adni_screening_scaled_v1
+out_dir: /home/neurodeep/ADNI/processed/adni_screening_scaled_v1
 
 # 정육면체 출력 한 변의 voxel 수. 256 -> [256, 256, 256].
 # 개발용으로 줄일 수 있지만 해당 결과는 256^3 재현 조건과 구분해야 한다.
