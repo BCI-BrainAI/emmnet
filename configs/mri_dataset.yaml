@@ -1,0 +1,40 @@
+# ADNI MRI 데이터 준비 설정
+# build_mri_dataset() 인자와 동일한 키를 사용한다.
+# preprocess_mri.py --config 옵션으로 이 YAML을 읽어 실행한다.
+# YAML 상대 경로는 configs/ 기준, CLI 경로 옵션은 현재 작업 폴더 기준.
+# 서버에서 실행할 때 raw_dir와 metadata_dir를 해당 서버의 경로로 지정한다.
+
+# NIfTI(.nii 또는 .nii.gz) 영상 루트. 실행 전 실제 경로 입력 필수.
+# 예시: /data/ADNI (예시이며 실제 서버 경로가 아님)
+raw_dir: null
+
+# 상세 XML 메타데이터 루트. null이면 raw_dir 내부에서 XML을 탐색한다.
+# XML이 별도 위치에 있으므로 서버에 복사/마운트한 경로를 지정하는 것을 권장.
+metadata_dir: null
+
+# 기존 결과 덮어쓰기를 막기 위해 새 폴더 또는 빈 폴더만 사용 가능.
+out_dir: ../data/processed/adni_screening_scaled_v1
+
+# 정육면체 출력 한 변의 voxel 수. 256 -> [256, 256, 256].
+# 개발용으로 줄일 수 있지만 해당 결과는 256^3 재현 조건과 구분해야 한다.
+target_size: 256
+
+# RAS 방향으로 배열 축을 통일한다. MNI 정합/등방성 재표본화는 아니다.
+canonical: true
+
+# train, val, test 순서. 합계는 1.0이어야 한다.
+# CN/MCI/AD 연구군별로 피험자를 나눈다. 아래 값은 팀 구현 기본값이며 논문 값이 아니다.
+split_ratios: [0.8, 0.1, 0.1]
+seed: 42
+
+# 아래 항목은 현재 mri_dataset.py의 고정 동작을 설명하는 주석이다.
+# YAML 옵션이 아니므로 변경하려면 Python 코드도 수정해야 한다.
+# - 선택: ADNI Screening, 처리명 마지막 항목이 정확히 Scaled (Scaled_2 제외)
+# - 피험자당 한 영상. 복수 후보는 자동 선택하지 않고 제외 기록.
+# - 라벨: researchGroup CN=0, MCI=1, AD=1 (진단 시점 대조 미검증)
+# - 중앙 zero-padding -> trilinear resize -> 영상별 min-max [0,1]
+# - N4/MNI 추가 처리 없음. 기존 N3/Scaled 처리 이력 보존.
+# - 저장: .npy / float32 / [D,H,W]; Dataset 반환 시 채널 차원 추가.
+# - 출력: manifest.csv, selection.csv, excluded.csv, run.json,
+#         volumes/*.npy, provenance/*.json
+# - 시각적 품질 확인은 별도 수행. 처리 성공은 영상 품질 검증 완료를 뜻하지 않음.
