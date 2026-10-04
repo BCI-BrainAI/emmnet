@@ -1,18 +1,35 @@
+# YAML 상대 경로는 이 파일(configs/) 기준.
+data:
+  processed_dir: ../data/processed/adni_screening_scaled_v1   # preprocess_mri.py out_dir 복사/심볼릭 링크
+  normalization: percentile_zscore   # Med3D 사전학습과 동일(0.5~99.5 percentile truncation 후 z-score). minmax도 가능
+  num_workers: 4
+
 input:
   channels: 1
-  spatial_size: 256
-  normalize: minmax_0_1   # TODO: Med3D pretrained 가중치와 정규화 방식이 다를 수 있음 -- 확인 필요
+  spatial_size: 256   # 정보용. 실제 크기는 manifest target_size를 따름
 
 model:
   backbone: resnet18_3d
   proj_dim: 256
+  dropout: 0.0
   pretrained_path: ../pretrained/resnet_18.pth
 
 train:
   optimizer: adamw
   betas: [0.9, 0.999]
-  batch_size: 16
+  lr: 1.0e-4            # 팀 기본값(논문 값 아님). 사전학습 backbone용
+  head_lr_mult: 10.0    # projection/head는 새 레이어라 lr x10
+  weight_decay: 1.0e-2
+  batch_size: 16        # effective batch (micro_batch_size x accumulation)
+  micro_batch_size: 2   # 256^3에서 GPU 16GB OOM 방지. 올릴 수 있으면 올리고 accumulation은 자동 계산
+  epochs: 50
+  early_stopping_patience: 10
   loss: focal
   focal_alpha: 0.25
   focal_gamma: 2
+  grad_clip: 1.0
+  amp: true             # CUDA bf16 autocast
+  freeze_bn: false      # micro batch가 매우 작아 BN이 불안정하면 true로 비교
+  seed: 42
+  device: auto
   checkpoint_dir: ../checkpoints
