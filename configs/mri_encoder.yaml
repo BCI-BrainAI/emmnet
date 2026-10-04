@@ -14,21 +14,27 @@ model:
   dropout: 0.0
   pretrained_path: ../pretrained/resnet_18.pth
 
+# 하이퍼파라미터 출처 표기:
+#  [논문] EMMNet Sec 4.2 (p.286): AdamW(b1=0.9,b2=0.999), batch 16, cosine decay + warmup, focal(a=0.25,g=2), feature dim 256, dual RTX 4090
+#  [논문 아님] lr, weight_decay, head_lr_mult, epochs, warmup_epochs, grad_clip, early stopping: EMMNet에 값 없음 -> 팀 기본값.
+#  참고: Med3D Sec 4.2 (p.8)은 사전학습 모델 fine-tuning에 Adam lr 0.001 사용(분류 head 전체 fine-tune, 다른 과제).
 train:
-  optimizer: adamw
-  betas: [0.9, 0.999]
-  lr: 1.0e-4            # 팀 기본값(논문 값 아님). 사전학습 backbone용
-  head_lr_mult: 10.0    # projection/head는 새 레이어라 lr x10
-  weight_decay: 1.0e-2
-  batch_size: 16        # effective batch (micro_batch_size x accumulation)
-  micro_batch_size: 2   # 256^3에서 GPU 16GB OOM 방지. 올릴 수 있으면 올리고 accumulation은 자동 계산
-  epochs: 50
-  early_stopping_patience: 10
+  optimizer: adamw      # [논문]
+  betas: [0.9, 0.999]   # [논문]
+  lr: 1.0e-4            # [팀 기본값] backbone. lr sweep 권장: 1e-3(Med3D 참고) / 3e-4 / 1e-4 / 3e-5
+  head_lr_mult: 10.0    # [팀 기본값] projection/head는 새 레이어라 lr x10
+  weight_decay: 1.0e-2  # [팀 기본값] AdamW 관례값
+  warmup_epochs: 2      # [논문: warmup 사용, 길이 미기재] linear warmup 후 cosine decay
+  batch_size: 16        # [논문] effective batch = micro_batch_size x GPU 수 x accumulation
+  micro_batch_size: 2   # GPU당 batch. 256^3에서 OOM 나지 않는 최대값(runbook 4번 측정)
+  epochs: 50            # [팀 기본값]
+  early_stopping_patience: 10   # [팀 기본값]
   loss: focal
-  focal_alpha: 0.25
-  focal_gamma: 2
-  grad_clip: 1.0
+  focal_alpha: 0.25     # [논문] alpha는 양성(label 1=MCI/AD) 가중치로 구현
+  focal_gamma: 2        # [논문]
+  grad_clip: 1.0        # [팀 기본값]
   amp: true             # CUDA bf16 autocast
+  sync_bn: true         # DDP(torchrun) 시 SyncBatchNorm으로 BN 통계를 GPU 간 공유
   freeze_bn: false      # micro batch가 매우 작아 BN이 불안정하면 true로 비교
   seed: 42
   device: auto

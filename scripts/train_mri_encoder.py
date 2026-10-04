@@ -6,6 +6,7 @@ python scripts/train_mri_encoder.py --config configs/mri_encoder.yaml --checkpoi
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -45,12 +46,14 @@ def main() -> None:
     if not pretrained.exists():
         raise FileNotFoundError(f"pretrained checkpoint 없음: {pretrained}")
     missing, unexpected = load_med3d_pretrained(model.encoder, pretrained)
-    print(f"[INFO] pretrained 로드. missing={missing} unexpected={unexpected}")
+    if os.environ.get("RANK", "0") == "0":
+        print(f"[INFO] pretrained 로드. missing={missing} unexpected={unexpected}")
     if missing or unexpected:  # backbone 키는 완전히 일치해야 한다.
         raise RuntimeError("Pretrained key mismatch")
 
     result = train(model=model, config=config, checkpoint_dir=args.checkpoint_dir)
-    print(f"[DONE] best_epoch={result['best_epoch']} best_val_auc={result['best_val_auc']:.4f}")
+    if os.environ.get("RANK", "0") == "0":
+        print(f"[DONE] best_epoch={result['best_epoch']} best_val_auc={result['best_val_auc']:.4f}")
 
 
 if __name__ == "__main__":

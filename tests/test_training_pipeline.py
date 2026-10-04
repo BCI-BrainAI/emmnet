@@ -108,3 +108,48 @@ def test_train_script_pretrained_keys_match_if_present():
     model = MRIClassifier()
     missing, unexpected = load_med3d_pretrained(model.encoder, ckpt)
     assert missing == [] and unexpected == []
+
+
+def test_ddp_two_process_cpu_smoke(tmp_path):
+    """torchrun 2프로세스(gloo, CPU)로 DDP 학습 경로(no_sync/accum/early-stop broadcast) 검증."""
+    import subprocess
+    import sys
+
+    import yaml
+    root_dir = Path(__file__).resolve().parents[1]
+    ckpt = root_dir / "pretrained" / "resnet_18.pth"
+    if not ckpt.exists():
+        pytest.skip("pretrained/resnet_18.pth 없음")
+    data = tmp_path / "data"
+    data.mkdir()
+    make_synthetic(data, {"train": 8, "val": 4, "test": 4})
+    cfg = yaml.safe_load((root_dir / "configs" / "mri_encoder.yaml").read_text())
+    cfg["data"].update(processed_dir=str(data), num_workers=0)
+    cfg["model"].update(proj_dim=16, pretrained_path=str(ckpt))
+    cfg["train"].update(batch_size=4, micro_batch_size=1, epochs=2, amp=False, device="cpu",
+                        sync_bn=False, warmup_epochs=1)
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    out = tmp_path / "ck"
+    import os
+    import socket
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0))
+        port = sk.getsockname()[1]
+    env = {**os.environ, "GLOO_SOCKET_IFNAME": "lo", "PYTHONUNBUFFERED": "1"}  # 호스트명 조회가 안 되는 샌드박스 대비
+    proc = subprocess.run(
+        [sys.executable, "-m", "torch.distributed.run", "--nproc_per_node=2", "--rdzv-backend=c10d",
+         f"--rdzv-endpoint=127.0.0.1:{port}", "--local-addr=127.0.0.1",
+         str(root_dir / "scripts" / "train_mri_encoder.py"), "--config", str(cfg_path),
+         "--processed-dir", str(data), "--checkpoint-dir", str(out)],
+        capture_output=True, text=True, timeout=300, env=env)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    assert "world=2" in proc.stdout and "accum=2" in proc.stdout
+    assert (out / "best.pth").exists()
+
+
+def test_lr_factor_warmup_then_cosine():
+    from training.trainer import lr_factor
+    f = [lr_factor(e, 10, 2) for e in range(10)]
+    assert f[0] < f[1] < f[2] <= 1.0 and f[2] == pytest.approx(1.0)
+    assert all(f[i] >= f[i + 1] for i in range(2, 9)) and f[-1] < 0.1
