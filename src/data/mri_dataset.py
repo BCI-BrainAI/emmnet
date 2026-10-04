@@ -270,9 +270,42 @@ def build_mri_dataset(raw_dir: str | Path, out_dir: str | Path, *, metadata_dir:
     print(f"Processed {len(completed)}/{len(records)} selected MRIs. Manifest: {out / 'manifest.csv'}")
 
 
+NORMALIZATIONS = ("percentile_zscore", "minmax")
+
+
+def med3d_normalize(volume: np.ndarray, low_pct: float = 0.5, high_pct: float = 99.5) -> np.ndarray:
+    """Med3D 사전학습 방식 정규화 [Med3D Eq.2]: percentile truncation 후 z-score.
+
+    - 전경(volume > 0) 복셀로 percentile/mean/std를 계산한다.
+    - 전경은 [p_low, p_high]로 clip 후 (x-mean)/std, 배경(0)은 0으로 둔다.
+      (Med3D 공식 코드는 배경을 N(0,1) 난수로 채우지만 재현성을 위해 0을 사용.)
+    - 저장된 .npy는 min-max 값이며 min-max는 아핀 변환이라 percentile+z-score 결과가
+      원본 강도에 직접 적용한 것과 동일하다. 따라서 전처리 산출물은 그대로 쓴다.
+    """
+    fg = volume > 0
+    if not fg.any():
+        raise ValueError("Empty foreground")
+    vals = volume[fg]
+    lo, hi = np.percentile(vals, [low_pct, high_pct])
+    vals = np.clip(vals, lo, hi)
+    std = float(vals.std())
+    if std < 1e-8:
+        raise ValueError("Zero-variance foreground")
+    out = np.zeros_like(volume, dtype=np.float32)
+    out[fg] = ((vals - vals.mean()) / std).astype(np.float32)
+    return out
+
+
 class MRIDataset(Dataset):
-    """전체 manifest를 검사한 뒤 요청 split의 (float32 [1,D,H,W], int label) 반환."""
-    def __init__(self, processed_dir: str | Path, split: str, manifest: Any = None):
+    """전체 manifest를 검사한 뒤 요청 split의 (float32 [1,D,H,W], int label) 반환.
+
+    normalization: percentile_zscore(기본, Med3D 사전학습과 동일) | minmax(저장값 [0,1] 그대로).
+    """
+    def __init__(self, processed_dir: str | Path, split: str, manifest: Any = None,
+                 normalization: str = "percentile_zscore"):
+        if normalization not in NORMALIZATIONS:
+            raise ValueError(f"Unknown normalization: {normalization}")
+        self.normalization = normalization
         self.root = Path(processed_dir).resolve()
         if split not in SPLITS:
             raise ValueError(f"Unknown split: {split}")
@@ -321,4 +354,6 @@ class MRIDataset(Dataset):
             raise ValueError(f"Invalid MRI shape/dtype: {row['image_id']}")
         if not np.isfinite(volume).all() or volume.min() < 0 or volume.max() > 1:
             raise ValueError(f"Invalid normalized MRI values: {row['image_id']}")
+        if self.normalization == "percentile_zscore":
+            volume = med3d_normalize(volume)
         return torch.from_numpy(np.ascontiguousarray(volume)).unsqueeze(0), row["label"]
