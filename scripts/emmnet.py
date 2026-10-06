@@ -6,6 +6,7 @@
   python scripts/emmnet.py setup [--install-torch]     # torch/CUDA 확인, pip install -e, pytest, 가중치 해시
   python scripts/emmnet.py check                       # 데이터 점검 + 정규화 통계 캐시
   python scripts/emmnet.py baseline base [--test]      # 기존 run 평가(train/val) + 분석 (+ test 1회)
+  python scripts/emmnet.py diagnose                     # overfit 실패 원인 분리 진단(입력/feature/grad/변형 실험)
   python scripts/emmnet.py overfit                     # overfit 점검 학습 + 분석
   python scripts/emmnet.py train base2 [--gpu 0] [--set train.lr=3e-4 ...]   # 백그라운드 학습(중단된 run이면 자동 재개)
   python scripts/emmnet.py sweep [--lrs 1e-3 3e-4 1e-4 3e-5]                 # lr sweep, GPU에 자동 분배
@@ -360,6 +361,12 @@ def cmd_overfit(a, cfg):
     print("판정: train_auc(분석 출력의 [train] AUC, history의 train_auc)가 ~1.0 이면 정상")
 
 
+def cmd_diagnose(a, cfg):
+    need_data(cfg)
+    extra = ["--out", str(ckpt_root(cfg) / "diagnose.json")]
+    run(py("diagnose_overfit.py", "--steps", str(a.steps), *extra), cfg, a.dry_run)
+
+
 def cmd_train(a, cfg):
     need_data(cfg)
     gpu = a.gpu if a.gpu is not None else get_gpus(cfg)[0]
@@ -441,6 +448,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--name", default="overfit"); s.add_argument("--n", type=int, default=16)
     s.add_argument("--lr", default="3e-4"); s.add_argument("--epochs", type=int, default=60)
     s.add_argument("--batch", type=int, default=4, help="overfit용 배치(step 수 확보). n/batch step/epoch")
+    s = sub.add_parser("diagnose", parents=[common]); s.set_defaults(fn=cmd_diagnose)
+    s.add_argument("--steps", type=int, default=120)
     s = sub.add_parser("train", parents=[common]); s.set_defaults(fn=cmd_train)
     s.add_argument("name"); s.add_argument("--gpu", type=int); s.add_argument("--set", nargs="+", action="extend")
     s = sub.add_parser("sweep", parents=[common]); s.set_defaults(fn=cmd_sweep)
