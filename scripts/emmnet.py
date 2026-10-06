@@ -446,7 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("name", nargs="?", default="base"); s.add_argument("--test", action="store_true")
     s = sub.add_parser("overfit", parents=[common]); s.set_defaults(fn=cmd_overfit)
     s.add_argument("--name", default="overfit"); s.add_argument("--n", type=int, default=16)
-    s.add_argument("--lr", default="3e-4"); s.add_argument("--epochs", type=int, default=60)
+    s.add_argument("--lr", default="3e-4"); s.add_argument("--epochs", type=int, default=120)
     s.add_argument("--batch", type=int, default=4, help="overfit용 배치(step 수 확보). n/batch step/epoch")
     s = sub.add_parser("diagnose", parents=[common]); s.set_defaults(fn=cmd_diagnose)
     s.add_argument("--steps", type=int, default=120)
