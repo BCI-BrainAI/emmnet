@@ -135,6 +135,21 @@ def test_resume_after_interruption(tmp_path, monkeypatch):
     assert (out / "last.pth").exists() and not (out / "resume.pth").exists()
 
 
+def test_overfit_run_saves_last_epoch_as_best(tmp_path):
+    (tmp_path / "data").mkdir()
+    root = make_synthetic(tmp_path / "data", {"train": 8, "val": 4, "test": 4})
+    config = {
+        "data": {"processed_dir": str(root), "normalization": "percentile_zscore", "num_workers": 0, "overfit_n": 4},
+        "input": {"channels": 1}, "model": {"proj_dim": 16},
+        "train": {"batch_size": 2, "micro_batch_size": 2, "epochs": 3, "lr": 1e-3, "amp": False,
+                  "device": "cpu", "early_stopping_patience": 99, "seed": 0},
+    }
+    out = tmp_path / "ckpt"
+    result = train(MRIClassifier(in_channels=1, proj_dim=16), config, out)
+    assert result["best_epoch"] == 3
+    assert load_checkpoint(out / "best.pth")["epoch"] == 3
+
+
 def test_train_script_pretrained_keys_match_if_present():
     """실제 Med3D 가중치가 있으면 backbone 키가 완전히 일치해야 한다."""
     ckpt = Path(__file__).resolve().parents[1] / "pretrained" / "resnet_18.pth"

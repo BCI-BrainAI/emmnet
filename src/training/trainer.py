@@ -169,6 +169,7 @@ def train(model, config: dict[str, Any], checkpoint_dir: str | Path, resume: boo
     elif resume:
         print("[RESUME] resume.pth 없음 -> 처음부터 시작", flush=True)
     seed = int(cfg.get("seed", 42))
+    overfit_run = bool(config.get("data", {}).get("overfit_n"))
 
     for epoch in range(start_epoch + 1, epochs + 1):
         train_loader.generator.manual_seed(seed * 10_000 + epoch)  # epoch별 셔플 순서 고정 -> 재개해도 동일
@@ -209,7 +210,8 @@ def train(model, config: dict[str, Any], checkpoint_dir: str | Path, resume: boo
         print(json.dumps(row), flush=True)
         (out_dir / "history.json").write_text(json.dumps(history, indent=2), encoding="utf-8")  # 매 epoch 갱신
         auc = val["auc"] if np.isfinite(val["auc"]) else -1.0
-        if auc > best_auc:
+        # overfit 점검(data.overfit_n)에서는 val이 선택 기준으로 무의미(학습에 안 쓰임) -> 항상 마지막 epoch를 best로 저장
+        if auc > best_auc or overfit_run:
             best_auc, best_epoch = auc, epoch
             save_atomic({"state_dict": model.state_dict(), "epoch": epoch, "val_auc": auc,
                          "threshold": youden_threshold(yv, pv), "config": config}, out_dir / "best.pth")
