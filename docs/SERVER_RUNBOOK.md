@@ -34,6 +34,11 @@ export EMMNET_DATA=<전처리 out_dir>      # 이후 모든 스크립트가 데�
 설치 기록(서버에서 실제로 쓴 torch 설치 명령/버전): `__________`
 
 ## 1. 사전학습 가중치 (확정: resnet_18.pth)
+가중치는 git에 없다(용량). 맥북에서 서버로 직접 복사한다(`resnet_18.pth`만 필요, 약 132MB):
+```bash
+scp pretrained/resnet_18.pth <서버>:/mnt/disk2/projects/emmnet/pretrained/     # 맥북에서 실행
+```
+서버에서 확인:
 ```bash
 sha256sum pretrained/resnet_18.pth   # 로컬 값: 38b3a174...f61da3
 ```

@@ -61,9 +61,9 @@ emmnet/
 │   └── models/{eeg_encoder,fusion}.py, data/eeg_dataset.py   스텁
 ├── tests/              encoder / training pipeline / tooling / CAM
 ├── docs/SERVER_RUNBOOK.md
-└── pretrained/         Med3D 가중치(git 추적). 사용: resnet_18.pth (resnet_18_23dataset.pth는 해시가 달라 미사용, 보관)
+└── pretrained/         Med3D 가중치(**git 미추적**, 용량 때문에 서버로 직접 복사). 사용: resnet_18.pth (resnet_18_23dataset.pth는 해시가 달라 미사용, 보관)
 ```
-`checkpoints/`, `data/processed/`, `outputs/`는 git 미추적.
+`checkpoints/`, `data/processed/`, `outputs/`, `pretrained/*.pth`는 git 미추적.
 
 ## 논문 채택/이탈 요약
 
