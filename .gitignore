@@ -18,3 +18,4 @@ _to_delete/
 # Google Drive 원본 압축 해제본(3GB, 체크포인트+toy data) -- 필요한 파일만 pretrained/로 복사해서 씀
 MedicalNet_pytorch_files2/
 .emmnet.json
+pretrained.zip
