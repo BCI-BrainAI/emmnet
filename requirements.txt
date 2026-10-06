@@ -1,9 +1,0 @@
-# 개발 편의용 참고 목록. 정식 설치는 pyproject.toml 기준:
-#   pip install -e ".[dev]"
-# torch는 서버 CUDA/Python에 맞는 휠을 먼저 설치한 뒤 이 목록을 설치할 것(서버 드라이버 CUDA 12.4: cu126 휠 또는 Python 3.11/3.12).
-torch>=2.1
-numpy>=1.24
-pyyaml>=6.0
-nibabel>=5.1        # NIfTI I/O (전처리)
-matplotlib>=3.7     # QC 미리보기, 학습곡선(analyze_results.py), CAM
-pytest>=7.4

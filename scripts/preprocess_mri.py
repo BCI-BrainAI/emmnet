@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> None:
         from data.mri_dataset import build_mri_dataset
         build_mri_dataset(**settings)
     except ImportError as error:
-        parser.error(f"Missing dependency: {error}. Install project requirements.txt in this Python environment.")
+        parser.error(f"Missing dependency: {error}. Install the project (pip install -e .) in this Python environment.")
     except (ValueError, OSError) as error:
         parser.error(str(error))
 

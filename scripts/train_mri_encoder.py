@@ -7,7 +7,6 @@ python scripts/train_mri_encoder.py --checkpoint-dir checkpoints/run1 --set trai
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -16,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from models.mri.classifier import MRIClassifier  # noqa: E402
 from models.mri.mri_encoder import load_med3d_pretrained  # noqa: E402
 from training.trainer import train  # noqa: E402
-from utils.config import add_config_args, load_config  # noqa: E402,F401  (load_config: 하위 호환 re-export)
+from utils.config import add_config_args, load_config  # noqa: E402
 
 
 def main() -> None:
@@ -33,14 +32,12 @@ def main() -> None:
     if not pretrained.exists():
         raise FileNotFoundError(f"pretrained checkpoint 없음: {pretrained}")
     missing, unexpected = load_med3d_pretrained(model.encoder, pretrained)
-    if os.environ.get("RANK", "0") == "0":
-        print(f"[INFO] pretrained 로드. missing={missing} unexpected={unexpected}")
+    print(f"[INFO] pretrained 로드. missing={missing} unexpected={unexpected}")
     if missing or unexpected:  # backbone 키는 완전히 일치해야 한다.
         raise RuntimeError("Pretrained key mismatch")
 
     result = train(model=model, config=config, checkpoint_dir=args.checkpoint_dir)
-    if os.environ.get("RANK", "0") == "0":
-        print(f"[DONE] best_epoch={result['best_epoch']} best_val_auc={result['best_val_auc']:.4f}")
+    print(f"[DONE] best_epoch={result['best_epoch']} best_val_auc={result['best_val_auc']:.4f}")
 
 
 if __name__ == "__main__":

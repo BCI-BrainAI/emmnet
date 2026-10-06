@@ -9,8 +9,8 @@ git fetch origin && git checkout integration/mri-train
 # 서버 로컬 YAML 수정이 남아 있으면: git stash (micro_batch_size=4는 이제 커밋된 YAML 기본값)
 python -m venv .venv && source .venv/bin/activate        # 서버 Python 3.14면 3.11/3.12 환경 권장
 pip install torch --index-url https://download.pytorch.org/whl/cu126   # 드라이버 CUDA 12.4 -> cu126 휠 (실제 설치 방법은 아래 기록란에 남길 것)
-pip install -e ".[dev]" matplotlib      # pyproject.toml 기준. matplotlib 포함
-pytest -q                               # 로컬 기준 24개(신규 tooling 7개 포함) 통과 확인
+pip install -e ".[dev]"                # pyproject.toml 기준(matplotlib 포함)
+pytest -q                               # 로컬 기준 23개 통과 확인
 export EMMNET_DATA=<전처리 out_dir>      # 이후 모든 스크립트가 데이터 경로로 사용(--processed-dir 생략 가능)
 ```
 설치 기록(서버에서 실제로 쓴 torch 설치 명령/버전): `__________`
@@ -57,7 +57,7 @@ bash scripts/run_experiment.sh overfit --gpu 0 -- --set data.overfit_n=16 train.
 python scripts/analyze_results.py --run-dir checkpoints/overfit
 ```
 
-### 5-1. 단일 GPU 본 학습 (권장)
+### 5-1. 본 학습 (단일 GPU)
 ```bash
 bash scripts/run_experiment.sh base --gpu 0 --bg                  # 백그라운드(nohup), 로그: checkpoints/base/train.log
 bash scripts/run_experiment.sh lr3e-4 --gpu 0 --bg -- --set train.lr=3e-4 train.seed=1
@@ -67,11 +67,12 @@ bash scripts/run_experiment.sh lr3e-4 --gpu 0 --bg -- --set train.lr=3e-4 train.
 - test는 자동 실행하지 않는다. 같은 이름의 run 폴더가 있으면 거부(덮어쓰기 방지). 폴더 위치는 `CKPT_ROOT`로 변경 가능.
 - `--set`은 YAML에 있는 키만 허용(오타 방지). 예: `--set train.lr=3e-4 train.weight_decay=0.05`
 
-### 5-2. DDP (사용하지 않기로 결정했으나 구현/CPU 테스트됨)
+### 5-2. 여러 GPU 활용
+DDP는 지원하지 않는다. GPU별로 실험(lr/seed)을 나눠 병렬 실행한다:
 ```bash
-torchrun --standalone --nproc_per_node=2 scripts/train_mri_encoder.py --checkpoint-dir checkpoints/run_ddp
+bash scripts/run_experiment.sh lr3e-4 --gpu 0 --bg -- --set train.lr=3e-4
+bash scripts/run_experiment.sh lr1e-4 --gpu 1 --bg -- --set train.lr=1e-4
 ```
-effective batch = `micro_batch_size` x GPU수 x accumulation = `batch_size`(16). 배수가 아니면 에러. val은 rank0만 평가.
 
 ### 5-3. 분석 (test 전)
 ```bash

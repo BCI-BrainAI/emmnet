@@ -7,36 +7,31 @@ data:
 
 input:
   channels: 1
-  spatial_size: 256   # 정보용. 실제 크기는 manifest target_size를 따름
 
 model:
-  backbone: resnet18_3d
   proj_dim: 256
   dropout: 0.0
   pretrained_path: ../pretrained/resnet_18.pth
 
 # 하이퍼파라미터 출처 표기:
+# 고정 구현(YAML 키 아님): 모델=3D ResNet-18+projection+Linear probe, optimizer=AdamW, loss=binary focal.
 #  [논문] EMMNet Sec 4.2 (p.286): AdamW(b1=0.9,b2=0.999), batch 16, cosine decay + warmup, focal(a=0.25,g=2), feature dim 256, dual RTX 4090
 #  [논문 아님] lr, weight_decay, head_lr_mult, epochs, warmup_epochs, grad_clip, early stopping: EMMNet에 값 없음 -> 팀 기본값.
 #  참고: Med3D Sec 4.2 (p.8)은 사전학습 모델 fine-tuning에 Adam lr 0.001 사용(분류 head 전체 fine-tune, 다른 과제).
 train:
-  optimizer: adamw      # [논문]
   betas: [0.9, 0.999]   # [논문]
   lr: 1.0e-4            # [팀 기본값] backbone. lr sweep 권장: 1e-3(Med3D 참고) / 3e-4 / 1e-4 / 3e-5
   head_lr_mult: 10.0    # [팀 기본값] projection/head는 새 레이어라 lr x10
   weight_decay: 1.0e-2  # [팀 기본값] AdamW 관례값
   warmup_epochs: 2      # [논문: warmup 사용, 길이 미기재] linear warmup 후 cosine decay
-  batch_size: 16        # [논문] effective batch = micro_batch_size x GPU 수 x accumulation
+  batch_size: 16        # [논문] effective batch = micro_batch_size x accumulation (단일 GPU)
   micro_batch_size: 4   # GPU당 batch. 256^3 bf16 실측(scripts/profile_memory.py): bs1/2/4/8 = 1.8/3.6/6.6/12.8 GiB, bs8은 OOM 직전이라 4 사용
   epochs: 50            # [팀 기본값]
   early_stopping_patience: 10   # [팀 기본값]
-  loss: focal
   focal_alpha: 0.25     # [논문] alpha는 양성(label 1=MCI/AD) 가중치로 구현
   focal_gamma: 2        # [논문]
   grad_clip: 1.0        # [팀 기본값]
   amp: true             # CUDA bf16 autocast
-  sync_bn: true         # DDP(torchrun) 시 SyncBatchNorm으로 BN 통계를 GPU 간 공유
-  freeze_bn: false      # micro batch가 매우 작아 BN이 불안정하면 true로 비교
   seed: 42
   deterministic: false  # true면 cudnn deterministic/benchmark off (느려질 수 있음)
   device: auto

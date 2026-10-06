@@ -47,13 +47,6 @@ def load_model_from_checkpoint(path: str | Path, processed_dir: str | None = Non
     return model, config, ckpt
 
 
-def evaluate(model, config: dict[str, Any], checkpoint_path: str | Path, split: str = "test") -> dict[str, float]:
-    """하위 호환: 주어진 config로 평가(테스트/스모크용). CLI는 evaluate_split을 쓴다."""
-    ckpt = load_checkpoint(checkpoint_path)
-    model.load_state_dict(ckpt["state_dict"])
-    return evaluate_split(model, config, ckpt, split)[0]
-
-
 def evaluate_split(model, config: dict[str, Any], ckpt: dict[str, Any], split: str):
     """(metrics, prediction_rows). 예측 행은 manifest 순서 그대로이며 image_id/subject_id로 추적 가능."""
     device = resolve_device(config["train"].get("device", "auto"))
