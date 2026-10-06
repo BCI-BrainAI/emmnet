@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """서버 작업 자동화 CLI. 경로/GPU는 `init`으로 1회 저장하면 이후 타이핑이 필요 없다(표준 라이브러리만 사용).
 
-  python scripts/emmnet.py init --data <전처리 out_dir> --gpus 0 1
+  python scripts/emmnet.py info                        # 자동 감지된 데이터 경로/GPU/출력 폴더/디스크 확인 (init 불필요)
+  python scripts/emmnet.py init --data <전처리 out_dir> --gpus 0 1   # 자동 감지를 덮어쓸 때만 (선택)
   python scripts/emmnet.py setup [--install-torch]     # torch/CUDA 확인, pip install -e, pytest, 가중치 해시
   python scripts/emmnet.py check                       # 데이터 점검 + 정규화 통계 캐시
   python scripts/emmnet.py baseline base [--test]      # 기존 run 평가(train/val) + 분석 (+ test 1회)
   python scripts/emmnet.py overfit                     # overfit 점검 학습 + 분석
-  python scripts/emmnet.py train base2 [--gpu 0] [--set train.lr=3e-4 ...]   # 백그라운드 학습
+  python scripts/emmnet.py train base2 [--gpu 0] [--set train.lr=3e-4 ...]   # 백그라운드 학습(중단된 run이면 자동 재개)
   python scripts/emmnet.py sweep [--lrs 1e-3 3e-4 1e-4 3e-5]                 # lr sweep, GPU에 자동 분배
   python scripts/emmnet.py final --lr 3e-4 [--seeds 0 1 2]                   # 시드별 최종 학습
   python scripts/emmnet.py test final_s0 final_s1 final_s2                   # test 1회 평가 + 평균±표준편차
@@ -20,6 +21,7 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -33,16 +35,88 @@ DEFAULT_LRS = ["1e-3", "3e-4", "1e-4", "3e-5"]
 
 # ---------------------------------------------------------------- config / helpers
 def load_cfg() -> dict:
-    cfg = {"data": os.environ.get("EMMNET_DATA"), "gpus": [0], "ckpt_root": "checkpoints"}
+    """우선순위: .emmnet.json(init) > 환경변수(EMMNET_DATA, EMMNET_GPUS) > 자동 감지(필요할 때 resolve)."""
+    env_gpus = os.environ.get("EMMNET_GPUS")
+    cfg = {"data": os.environ.get("EMMNET_DATA"), "gpus": [int(x) for x in env_gpus.replace(",", " ").split()]
+           if env_gpus else None, "ckpt_root": "checkpoints"}
     if CFG_PATH.exists():
-        cfg.update(json.loads(CFG_PATH.read_text(encoding="utf-8")))
+        cfg.update({k: v for k, v in json.loads(CFG_PATH.read_text(encoding="utf-8")).items() if v is not None})
     return cfg
 
 
+SKIP_DIRS = {"volumes", "provenance", ".git", "checkpoints", "node_modules", "__pycache__", ".venv", "venv"}
+SCAN_ROOTS = ["/mnt/disk2", "/mnt/disk1", "/data", "/home/neurodeep/ADNI/processed"]
+
+
+def is_processed_dir(d: Path) -> bool:
+    return (d / "manifest.csv").is_file() and (d / "volumes").is_dir()
+
+
+def find_data_candidates(max_depth: int = 4) -> list[Path]:
+    """전처리 산출물(manifest.csv + volumes/) 후보 탐색: YAML out_dir -> repo data/processed -> 서버 디스크 스캔."""
+    cands: list[Path] = []
+    try:
+        import yaml
+        out = yaml.safe_load((ROOT / "configs" / "mri_dataset.yaml").read_text(encoding="utf-8")).get("out_dir")
+        if out:
+            cands.append(Path(out).expanduser())
+    except Exception:  # noqa: BLE001  (PyYAML 없음/파일 없음은 무시)
+        pass
+    proc = ROOT / "data" / "processed"
+    cands += [proc / "adni_screening_scaled_v1", *(sorted(proc.glob("*")) if proc.is_dir() else [])]
+    found = [c.resolve() for c in cands if c.is_dir() and is_processed_dir(c)]
+    if not found:
+        for base in SCAN_ROOTS:
+            b = Path(base)
+            if not b.is_dir():
+                continue
+            for dirpath, dirnames, _ in os.walk(b):
+                depth = len(Path(dirpath).relative_to(b).parts)
+                dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS] if depth < max_depth else []
+                if is_processed_dir(Path(dirpath)):
+                    found.append(Path(dirpath).resolve())
+    return list(dict.fromkeys(found))
+
+
 def need_data(cfg: dict) -> str:
-    if not cfg.get("data"):
-        sys.exit("데이터 경로 미설정: python scripts/emmnet.py init --data <전처리 out_dir>")
-    return cfg["data"]
+    if cfg.get("data"):
+        return cfg["data"]
+    cands = find_data_candidates()
+    pref = [c for c in cands if "adni_screening_scaled" in c.name]
+    if len(cands) == 1 or len(pref) == 1:
+        cfg["data"] = str((pref or cands)[0])
+        print(f"[auto] 데이터 경로: {cfg['data']}", flush=True)
+        return cfg["data"]
+    if cands:
+        sys.exit("데이터 후보가 여러 개입니다. 하나를 지정하세요(python scripts/emmnet.py init --data <경로>):\n  "
+                 + "\n  ".join(map(str, cands)))
+    sys.exit("전처리 산출물(manifest.csv + volumes/)을 찾지 못했습니다. 경로를 지정하세요: "
+             "python scripts/emmnet.py init --data <전처리 out_dir>")
+
+
+def detect_gpus() -> list[int]:
+    """nvidia-smi로 비어 있는 GPU(사용 메모리 < max(1GB, 10%)) 감지. nvidia-smi가 없으면 [0]."""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=index,memory.used,memory.total", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=15, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return [0]
+    free = []
+    for line in out.strip().splitlines():
+        idx, used, total = (int(float(x)) for x in line.split(","))
+        if used < max(1000, 0.1 * total):
+            free.append(idx)
+    return free
+
+
+def get_gpus(cfg: dict) -> list[int]:
+    if not cfg.get("gpus"):
+        gpus = detect_gpus()
+        if not gpus:
+            sys.exit("비어 있는 GPU가 없습니다(nvidia-smi 확인). 강제로 쓰려면: python scripts/emmnet.py init --gpus 0")
+        cfg["gpus"] = gpus
+        print(f"[auto] 사용 GPU(비어 있음): {gpus}", flush=True)
+    return cfg["gpus"]
 
 
 def env_for(cfg: dict) -> dict:
@@ -74,8 +148,8 @@ def py(script: str, *args: str) -> list[str]:
     return [sys.executable, f"scripts/{script}", *args]
 
 
-def exp_cmd(name: str, gpu: int, sets: list[str]) -> list[str]:
-    cmd = ["bash", "scripts/run_experiment.sh", name, "--gpu", str(gpu), "--"]
+def exp_cmd(name: str, gpu: int, sets: list[str], resume: bool = False) -> list[str]:
+    cmd = ["bash", "scripts/run_experiment.sh", name, "--gpu", str(gpu), *(["--resume"] if resume else []), "--"]
     return cmd + (["--set", *sets] if sets else [])
 
 
@@ -97,30 +171,53 @@ def run_dir(cfg: dict, name: str) -> Path:
     return ckpt_root(cfg) / name
 
 
-def split_new(cfg: dict, names_sets: list[tuple[str, list[str]]]) -> list[tuple[str, list[str]]]:
-    out = []
-    for name, sets in names_sets:
-        d = run_dir(cfg, name)
-        if d.exists() and any(d.iterdir()):
-            print(f"[SKIP] 이미 존재: {name}")
-        else:
-            out.append((name, sets))
-    return out
+def is_running(d: Path) -> bool:
+    try:
+        return subprocess.run(["pgrep", "-f", f"train_mri_encoder.py.*--checkpoint-dir {d}"],
+                              capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def classify(cfg: dict, name: str) -> str:
+    """new | resume(중단됨) | running | done"""
+    d = run_dir(cfg, name)
+    if not d.exists() or not any(d.iterdir()):
+        return "new"
+    if (d / "last.pth").exists():
+        return "done"
+    return "running" if is_running(d) else "resume"
 
 
 def distribute(cfg: dict, gpus: list[int], items: list[tuple[str, list[str]]], dry: bool) -> None:
-    items = split_new(cfg, items)
-    if not items:
-        print("새로 시작할 run 없음")
+    jobs_by_name = []
+    for name, sets in items:
+        st = classify(cfg, name)
+        if st == "done":
+            print(f"[SKIP] 완료됨: {name}")
+        elif st == "running":
+            print(f"[SKIP] 진행 중: {name}")
+        else:
+            if st == "resume":
+                print(f"[RESUME] 중단된 run 재개: {name}")
+            jobs_by_name.append((name, sets, st == "resume"))
+    if not jobs_by_name:
+        print("새로 시작/재개할 run 없음")
         return
+    root = ckpt_root(cfg)
+    root.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(root).free / 2**30
+    print(f"출력 폴더: {root} (여유 {free:.1f} GiB)")
+    if free < 3 * len(jobs_by_name):
+        print("[WARN] 디스크 여유 부족 가능: run당 약 0.7GiB(best/last/resume.pth) 필요")
     queues: dict[int, list[list[str]]] = {g: [] for g in gpus}
-    for i, (name, sets) in enumerate(items):
+    for i, (name, sets, resume) in enumerate(jobs_by_name):
         g = gpus[i % len(gpus)]
-        queues[g].append(exp_cmd(name, g, sets))
+        queues[g].append(exp_cmd(name, g, sets, resume))
     for g, jobs in queues.items():
         if jobs:
             launch_queue(cfg, g, jobs, dry)
-    print("진행 확인: python scripts/emmnet.py status")
+    print("진행 확인: python scripts/emmnet.py status   (끊기면 같은 명령을 다시 실행하면 이어서 학습)")
 
 
 # ---------------------------------------------------------------- run summary
@@ -135,10 +232,12 @@ def summarize_run(d: Path) -> dict | None:
     hist = read_json(d / "history.json")
     if hist is None:
         return None
-    log = d / "train.log"
-    done = log.exists() and "[DONE]" in log.read_text(encoding="utf-8", errors="ignore")
-    recent = log.exists() and time.time() - log.stat().st_mtime < 600
-    state = "done" if done else ("running" if recent else "stopped?")
+    if (d / "last.pth").exists():
+        state = "done"
+    elif is_running(d):
+        state = "running"
+    else:
+        state = "interrupted"  # 같은 명령(train/sweep/final)을 다시 실행하면 이어서 학습
     best = max(hist, key=lambda r: r["val_auc"] if r["val_auc"] == r["val_auc"] else -1) if hist else None
     tm = read_json(d / "test_metrics.json")
     return dict(name=d.name, state=state, epochs=len(hist), best_epoch=best["epoch"] if best else None,
@@ -164,8 +263,22 @@ def print_status(cfg: dict, only: list[str] | None = None) -> None:
 
 
 # ---------------------------------------------------------------- commands
+def cmd_info(a, cfg):
+    data = need_data(cfg)
+    m = Path(data) / "manifest.csv"
+    rj = read_json(Path(data) / "run.json") or {}
+    root = ckpt_root(cfg)
+    root.mkdir(parents=True, exist_ok=True)
+    gpus = get_gpus(cfg)
+    print(f"데이터      : {data}  (manifest {'OK' if m.exists() else '없음'}; split_counts={rj.get('split_counts')})")
+    print(f"출력 폴더   : {root}  (여유 {shutil.disk_usage(root).free / 2**30:.1f} GiB)")
+    print(f"사용 GPU    : {gpus}  (전체 감지: {detect_gpus()})")
+    print(f"가중치      : {'OK' if (ROOT / 'pretrained' / 'resnet_18.pth').exists() else '없음 -> scp로 복사 필요'}")
+    print(f"설정 파일   : {CFG_PATH if CFG_PATH.exists() else '없음(자동 감지 사용)'}")
+
+
 def cmd_init(a, cfg):
-    cfg = dict(cfg)
+    cfg = {k: v for k, v in cfg.items() if v is not None}
     if a.data:
         cfg["data"] = str(Path(a.data).expanduser().resolve())
     if a.gpus:
@@ -221,7 +334,7 @@ def cmd_check(a, cfg):
 def eval_and_analyze(cfg, name, splits, dry):
     d = run_dir(cfg, name)
     run(py("evaluate_mri_encoder.py", "--checkpoint", str(d / "best.pth"), "--splits", *splits), cfg, dry,
-        gpu=cfg["gpus"][0])
+        gpu=get_gpus(cfg)[0])
     run(py("analyze_results.py", "--run-dir", str(d)), cfg, dry)
 
 
@@ -235,20 +348,25 @@ def cmd_baseline(a, cfg):
 def cmd_overfit(a, cfg):
     need_data(cfg)
     sets = [f"data.overfit_n={a.n}", f"train.lr={a.lr}", f"train.epochs={a.epochs}", "train.early_stopping_patience=999"]
-    run(exp_cmd(a.name, cfg["gpus"][0], sets), cfg, a.dry_run)
+    gpu = get_gpus(cfg)[0]
+    st = classify(cfg, a.name)
+    if st == "done":
+        print(f"[SKIP] 이미 완료된 run: {a.name}")
+    else:
+        run(exp_cmd(a.name, gpu, sets, resume=(st == "resume")), cfg, a.dry_run)
     run(py("analyze_results.py", "--run-dir", str(run_dir(cfg, a.name))), cfg, a.dry_run)
     print("판정: train_auc(분석 출력의 [train] AUC, history의 train_auc)가 ~1.0 이면 정상")
 
 
 def cmd_train(a, cfg):
     need_data(cfg)
-    gpu = a.gpu if a.gpu is not None else cfg["gpus"][0]
+    gpu = a.gpu if a.gpu is not None else get_gpus(cfg)[0]
     distribute(cfg, [gpu], [(a.name, a.set or [])], a.dry_run)
 
 
 def cmd_sweep(a, cfg):
     need_data(cfg)
-    gpus = a.gpus or cfg["gpus"]
+    gpus = a.gpus or get_gpus(cfg)
     items = [(f"lr{lr}", [f"train.lr={lr}", *(a.set or [])]) for lr in a.lrs]
     distribute(cfg, gpus, items, a.dry_run)
     print("선택 기준: val AUC만 사용(test 금지). 끝나면 status 확인 -> final")
@@ -256,7 +374,7 @@ def cmd_sweep(a, cfg):
 
 def cmd_final(a, cfg):
     need_data(cfg)
-    gpus = a.gpus or cfg["gpus"]
+    gpus = a.gpus or get_gpus(cfg)
     items = [(f"final_s{s}", [f"train.lr={a.lr}", f"train.seed={s}", *(a.set or [])]) for s in a.seeds]
     distribute(cfg, gpus, items, a.dry_run)
     print("끝나면: python scripts/emmnet.py test " + " ".join(n for n, _ in items))
@@ -271,7 +389,7 @@ def cmd_test(a, cfg):
             print(f"[SKIP] {name}: test 이미 사용됨(재평가는 --force)")
         else:
             run(py("evaluate_mri_encoder.py", "--checkpoint", str(d / "best.pth"), "--splits", "test",
-                   *(["--force"] if a.force else [])), cfg, a.dry_run, gpu=cfg["gpus"][0])
+                   *(["--force"] if a.force else [])), cfg, a.dry_run, gpu=get_gpus(cfg)[0])
             run(py("analyze_results.py", "--run-dir", str(d)), cfg, a.dry_run)
     if a.dry_run:
         return
@@ -308,6 +426,7 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)  # 서브명령 뒤에도 --dry-run 허용
     common.add_argument("--dry-run", action="store_true", default=argparse.SUPPRESS)
 
+    s = sub.add_parser("info", parents=[common]); s.set_defaults(fn=cmd_info)
     s = sub.add_parser("init", parents=[common]); s.set_defaults(fn=cmd_init)
     s.add_argument("--data"); s.add_argument("--gpus", type=int, nargs="+"); s.add_argument("--ckpt-root")
     s = sub.add_parser("setup", parents=[common]); s.set_defaults(fn=cmd_setup)

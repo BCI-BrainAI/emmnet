@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 import time
 from pathlib import Path
@@ -103,7 +104,17 @@ def lr_factor(epoch: int, epochs: int, warmup: int) -> float:
     return 0.5 * (1 + math.cos(math.pi * min(progress, 1.0)))
 
 
-def train(model, config: dict[str, Any], checkpoint_dir: str | Path) -> dict[str, Any]:
+RESUME_FILE = "resume.pth"
+
+
+def save_atomic(obj: Any, path: Path) -> None:
+    """임시 파일에 쓴 뒤 교체한다(저장 도중 중단돼도 기존 파일이 깨지지 않음)."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
+def train(model, config: dict[str, Any], checkpoint_dir: str | Path, resume: bool = False) -> dict[str, Any]:
     cfg = config["train"]
     device = resolve_device(cfg.get("device", "auto"))
     set_seed(int(cfg.get("seed", 42)), bool(cfg.get("deterministic", False)))
@@ -134,6 +145,8 @@ def train(model, config: dict[str, Any], checkpoint_dir: str | Path) -> dict[str
 
     out_dir = Path(checkpoint_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    if resume and (out_dir / "last.pth").exists():
+        raise RuntimeError(f"이미 완료된 run(last.pth 존재): {out_dir}")
     (out_dir / "config.yaml").write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
     verified = bool(train_loader.dataset.dataset.labels_verified if isinstance(train_loader.dataset, Subset)
                     else train_loader.dataset.labels_verified)
@@ -144,9 +157,21 @@ def train(model, config: dict[str, Any], checkpoint_dir: str | Path) -> dict[str
         print("[WARN] label_verified=False: 라벨(CN/MCI/AD)이 진단 시점 기준으로 검증되지 않았다.", flush=True)
     patience = int(cfg.get("early_stopping_patience", 10))
     best_auc, best_epoch, history = -1.0, -1, []
-    epoch = 0
+    epoch = start_epoch = 0
+    resume_path = out_dir / RESUME_FILE
+    if resume and resume_path.exists():
+        st = torch.load(resume_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(st["state_dict"])
+        optimizer.load_state_dict(st["optimizer"])
+        best_auc, best_epoch, history, start_epoch = st["best_auc"], st["best_epoch"], st["history"], st["epoch"]
+        print(f"[RESUME] epoch {start_epoch} 이후부터 재개 (best_epoch={best_epoch}, best_val_auc={best_auc:.4f})", flush=True)
+        del st
+    elif resume:
+        print("[RESUME] resume.pth 없음 -> 처음부터 시작", flush=True)
+    seed = int(cfg.get("seed", 42))
 
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch + 1, epochs + 1):
+        train_loader.generator.manual_seed(seed * 10_000 + epoch)  # epoch별 셔플 순서 고정 -> 재개해도 동일
         for g in optimizer.param_groups:
             g["lr"] = g["base"] * lr_factor(epoch - 1, epochs, warmup)
         model.train()
@@ -186,11 +211,15 @@ def train(model, config: dict[str, Any], checkpoint_dir: str | Path) -> dict[str
         auc = val["auc"] if np.isfinite(val["auc"]) else -1.0
         if auc > best_auc:
             best_auc, best_epoch = auc, epoch
-            torch.save({"state_dict": model.state_dict(), "epoch": epoch, "val_auc": auc,
-                        "threshold": youden_threshold(yv, pv), "config": config}, out_dir / "best.pth")
-        elif epoch - best_epoch >= patience:
+            save_atomic({"state_dict": model.state_dict(), "epoch": epoch, "val_auc": auc,
+                         "threshold": youden_threshold(yv, pv), "config": config}, out_dir / "best.pth")
+        early_stop = auc <= best_auc and epoch - best_epoch >= patience
+        save_atomic({"state_dict": model.state_dict(), "optimizer": optimizer.state_dict(), "epoch": epoch,
+                     "best_auc": best_auc, "best_epoch": best_epoch, "history": history}, resume_path)
+        if early_stop:
             print(f"[INFO] early stop at epoch {epoch} (best {best_epoch}, val_auc={best_auc:.4f})", flush=True)
             break
 
-    torch.save({"state_dict": model.state_dict(), "epoch": epoch, "config": config}, out_dir / "last.pth")
+    save_atomic({"state_dict": model.state_dict(), "epoch": epoch, "config": config}, out_dir / "last.pth")
+    resume_path.unlink(missing_ok=True)  # 완료되면 재개용 파일 정리
     return {"best_epoch": best_epoch, "best_val_auc": best_auc, "history": history}

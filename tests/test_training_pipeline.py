@@ -103,6 +103,38 @@ def test_train_and_evaluate_smoke(tmp_path):
     assert json.dumps(metrics)
 
 
+def test_resume_after_interruption(tmp_path, monkeypatch):
+    import training.trainer as T
+    (tmp_path / "data").mkdir()
+    root = make_synthetic(tmp_path / "data", {"train": 8, "val": 4, "test": 4})
+    config = {
+        "data": {"processed_dir": str(root), "normalization": "percentile_zscore", "num_workers": 0},
+        "input": {"channels": 1}, "model": {"proj_dim": 16},
+        "train": {"batch_size": 4, "micro_batch_size": 2, "epochs": 4, "lr": 1e-3, "amp": False,
+                  "device": "cpu", "early_stopping_patience": 99, "seed": 0},
+    }
+    out = tmp_path / "ckpt"
+    real, calls = T.predict, {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 3:  # 3번째 predict(= epoch3 검증) 중 강제 중단 -> resume.pth는 epoch2 종료 시점
+            raise KeyboardInterrupt
+        return real(*a, **k)
+
+    monkeypatch.setattr(T, "predict", flaky)
+    with pytest.raises(KeyboardInterrupt):
+        train(MRIClassifier(in_channels=1, proj_dim=16), config, out)
+    assert (out / "resume.pth").exists() and not (out / "last.pth").exists()
+    with pytest.raises(Exception):  # 재개 없이 기존 run 덮어쓰기 금지는 run_experiment.sh 담당; last.pth 있으면 resume 거부
+        (out / "last.pth").write_text("x"); train(MRIClassifier(in_channels=1, proj_dim=16), config, out, resume=True)
+    (out / "last.pth").unlink()
+    monkeypatch.setattr(T, "predict", real)
+    result = train(MRIClassifier(in_channels=1, proj_dim=16), config, out, resume=True)
+    assert [h["epoch"] for h in result["history"]] == [1, 2, 3, 4]
+    assert (out / "last.pth").exists() and not (out / "resume.pth").exists()
+
+
 def test_train_script_pretrained_keys_match_if_present():
     """실제 Med3D 가중치가 있으면 backbone 키가 완전히 일치해야 한다."""
     ckpt = Path(__file__).resolve().parents[1] / "pretrained" / "resnet_18.pth"

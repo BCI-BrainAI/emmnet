@@ -4,10 +4,11 @@ main에는 반영하지 않는다. 이 브랜치에서만 작업한다. 모든 �
 직접 코드를 타이핑하는 단계는 없다(스크립트/`--set`으로 대체).
 
 ## 빠른 시작: 자동화 CLI (`scripts/emmnet.py`)
-경로/GPU는 `init`에 1회만 입력한다(`.emmnet.json`, git 미추적). 이후 명령은 짧다. 모든 명령에 `--dry-run`을 붙이면 실행 없이 명령만 출력한다.
+데이터 경로/GPU/출력 폴더는 자동 감지한다(`info`로 확인). 후보가 여러 개이거나 강제로 지정할 때만 `init`(`.emmnet.json`, git 미추적)을 쓴다. 모든 명령에 `--dry-run`을 붙이면 실행 없이 명령만 출력한다.
 ```bash
 git checkout integration/mri-train && git pull         # (configs 로컬 수정이 있으면 git stash)
-python scripts/emmnet.py init --data <전처리 out_dir> --gpus 0 1
+python scripts/emmnet.py info                           # 자동 감지 결과(데이터/GPU/출력 폴더/디스크/가중치)
+# (선택) 자동 감지를 덮어쓸 때만: python scripts/emmnet.py init --data <전처리 out_dir> --gpus 0 1
 python scripts/emmnet.py setup --install-torch          # torch(cu126)/CUDA 확인, pip install -e, pytest, 가중치 해시
 python scripts/emmnet.py check                          # 데이터 점검 + 정규화 통계 캐시 + split_counts
 python scripts/emmnet.py baseline base                  # 기존 base run: train/val 평가 + 분석 (test는 --test, 1회)
@@ -19,7 +20,11 @@ python scripts/emmnet.py sweep                          # lr {1e-3,3e-4,1e-4,3e-
 python scripts/emmnet.py final --lr <선택값>             # 시드 0 1 2 최종 학습(GPU 분배)
 python scripts/emmnet.py test final_s0 final_s1 final_s2   # run별 test 1회 + 평균±표준편차
 ```
-설치만 직접 하려면 아래 0절을 따른다. 이하 절은 CLI가 내부에서 호출하는 개별 명령의 상세 설명이다.
+### 끊김/중단 시 동작
+- SSH·터미널 끊김: 학습은 새 세션(`setsid nohup`/`start_new_session`)이라 계속 진행된다.
+- 서버 재부팅·프로세스 kill·OOM·logind `KillUserProcesses`: 프로세스는 죽는다. 매 epoch 끝에 `resume.pth`(모델/옵티마이저/history/best)를 원자적으로 저장하므로, 같은 명령(`train <name>`/`sweep`/`final`)을 다시 실행하면 중단된 run만 이어서 학습한다(완료된 run은 건너뜀, 진행 중인 run은 중복 실행하지 않음).
+- 재개 단위는 epoch(진행 중이던 epoch은 처음부터). 시드는 epoch별로 재설정되어 데이터 순서는 재현되나, 비결정적 CUDA 연산 때문에 비중단 run과 비트 단위로 같지는 않다.
+- 설치만 직접 하려면 아래 0절을 따른다. 이하 절은 CLI가 내부에서 호출하는 개별 명령의 상세 설명이다.
 
 ## 0. 환경
 ```bash

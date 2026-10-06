@@ -24,7 +24,7 @@ pytest -q
 ## 사용 (전체 절차는 `docs/SERVER_RUNBOOK.md`)
 
 ```bash
-python scripts/emmnet.py init --data <전처리 out_dir> --gpus 0 1   # 1회
+python scripts/emmnet.py info                                      # 자동 감지된 데이터/GPU/출력 폴더 확인 (init 불필요)
 python scripts/emmnet.py setup --install-torch                     # 환경 설치/검증
 python scripts/emmnet.py check                                     # 데이터 점검
 python scripts/emmnet.py train base2                               # 학습(백그라운드) + train/val 평가
@@ -33,6 +33,8 @@ python scripts/emmnet.py sweep                                     # lr sweep (G
 python scripts/emmnet.py final --lr <선택값>                        # 시드 3개 최종 학습
 python scripts/emmnet.py test final_s0 final_s1 final_s2           # test 1회 + 평균±표준편차
 ```
+경로/GPU는 자동 감지(데이터: `EMMNET_DATA`→YAML `out_dir`→`data/processed`→서버 디스크 스캔, GPU: 비어 있는 것, 출력: `checkpoints/`). 후보가 여러 개일 때만 `init --data`로 지정.
+중단(재부팅/kill/OOM) 시 같은 명령을 다시 실행하면 `resume.pth`에서 이어서 학습한다. SSH 끊김은 학습에 영향 없음.
 개별 스크립트(`run_experiment.sh`, `evaluate_mri_encoder.py`, `analyze_results.py` 등)와 `--set key=value` override는 런북 참조.
 
 ## 폴더 구조

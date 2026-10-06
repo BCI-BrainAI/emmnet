@@ -22,6 +22,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train MRI encoder (MRI-only probe)")
     add_config_args(parser)
     parser.add_argument("--checkpoint-dir", default="checkpoints/run1")
+    parser.add_argument("--resume", action="store_true", help="중단된 run 이어서 학습(resume.pth), 없으면 처음부터")
     args = parser.parse_args()
 
     config = load_config(Path(args.config).resolve(), args.processed_dir, args.overrides)
@@ -36,7 +37,7 @@ def main() -> None:
     if missing or unexpected:  # backbone 키는 완전히 일치해야 한다.
         raise RuntimeError("Pretrained key mismatch")
 
-    result = train(model=model, config=config, checkpoint_dir=args.checkpoint_dir)
+    result = train(model=model, config=config, checkpoint_dir=args.checkpoint_dir, resume=args.resume)
     print(f"[DONE] best_epoch={result['best_epoch']} best_val_auc={result['best_val_auc']:.4f}")
 
 

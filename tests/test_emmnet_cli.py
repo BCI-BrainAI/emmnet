@@ -21,14 +21,56 @@ def env(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_sweep_distributes_over_gpus_and_skips_existing(env, capsys):
+def test_sweep_resumes_interrupted_and_skips_done(env, capsys, monkeypatch):
+    monkeypatch.setattr(cli, "is_running", lambda d: False)
     (env / "ck" / "lr3e-4").mkdir(parents=True)
-    (env / "ck" / "lr3e-4" / "x").write_text("1")
+    (env / "ck" / "lr3e-4" / "resume.pth").write_text("1")      # 중단됨 -> 재개
+    (env / "ck" / "lr1e-3").mkdir(parents=True)
+    (env / "ck" / "lr1e-3" / "last.pth").write_text("1")        # 완료 -> 건너뜀
     cli.main(["sweep", "--dry-run", "--lrs", "1e-3", "3e-4", "1e-4"])
     out = capsys.readouterr().out
-    assert "[SKIP] 이미 존재: lr3e-4" in out
-    assert "run_experiment.sh lr1e-3 --gpu 0 -- --set train.lr=1e-3" in out
+    assert "[SKIP] 완료됨: lr1e-3" in out
+    assert "[RESUME] 중단된 run 재개: lr3e-4" in out
+    assert "run_experiment.sh lr3e-4 --gpu 0 --resume -- --set train.lr=3e-4" in out
     assert "run_experiment.sh lr1e-4 --gpu 1 -- --set train.lr=1e-4" in out
+
+
+def test_running_run_is_not_relaunched(env, capsys, monkeypatch):
+    monkeypatch.setattr(cli, "is_running", lambda d: True)
+    (env / "ck" / "lr3e-4").mkdir(parents=True)
+    (env / "ck" / "lr3e-4" / "x").write_text("1")
+    cli.main(["sweep", "--dry-run", "--lrs", "3e-4"])
+    assert "[SKIP] 진행 중: lr3e-4" in capsys.readouterr().out
+
+
+def test_detect_gpus_picks_idle(monkeypatch):
+    class R:
+        stdout = "0, 20000, 16376\n1, 12, 16376\n2, 400, 16376\n"
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: R())
+    assert cli.detect_gpus() == [1, 2]
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
+    assert cli.detect_gpus() == [0]
+
+
+def test_auto_detects_data_and_gpus_without_init(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "CFG_PATH", tmp_path / "none.json")
+    monkeypatch.delenv("EMMNET_DATA", raising=False)
+    monkeypatch.delenv("EMMNET_GPUS", raising=False)
+    d = tmp_path / "scan" / "adni_screening_scaled_v1"
+    (d / "volumes").mkdir(parents=True)
+    (d / "manifest.csv").write_text("x")
+    monkeypatch.setattr(cli, "SCAN_ROOTS", [str(tmp_path / "scan")])
+    monkeypatch.setattr(cli, "find_data_candidates", lambda max_depth=4: [d.resolve()])
+    monkeypatch.setattr(cli, "detect_gpus", lambda: [1])
+    cfg = cli.load_cfg()
+    assert cli.need_data(cfg) == str(d.resolve()) and cli.get_gpus(cfg) == [1]
+
+
+def test_multiple_data_candidates_ask_user(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "find_data_candidates", lambda max_depth=4: [tmp_path / "a", tmp_path / "b"])
+    with pytest.raises(SystemExit) as e:
+        cli.need_data({"data": None})
+    assert "여러 개" in str(e.value)
 
 
 def test_final_builds_seed_runs(env, capsys):
@@ -53,6 +95,7 @@ def test_status_summarizes_run(env, capsys):
     hist = [dict(epoch=1, val_auc=0.6, train_auc=0.7), dict(epoch=2, val_auc=0.8, train_auc=0.9)]
     (d / "history.json").write_text(json.dumps(hist))
     (d / "train.log").write_text("[DONE] best_epoch=2")
+    (d / "last.pth").write_text("x")
     (d / "test_metrics.json").write_text(json.dumps({"auc": 0.77}))
     cli.main(["status"])
     out = capsys.readouterr().out
