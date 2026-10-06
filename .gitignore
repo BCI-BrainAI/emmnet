@@ -19,3 +19,5 @@ _to_delete/
 MedicalNet_pytorch_files2/
 .emmnet.json
 pretrained.zip
+results/*
+!results/.gitkeep
