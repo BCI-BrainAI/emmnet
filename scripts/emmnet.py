@@ -347,7 +347,9 @@ def cmd_baseline(a, cfg):
 
 def cmd_overfit(a, cfg):
     need_data(cfg)
-    sets = [f"data.overfit_n={a.n}", f"train.lr={a.lr}", f"train.epochs={a.epochs}", "train.early_stopping_patience=999"]
+    # 16샘플을 batch 16(1 step/epoch)으로 돌리면 epoch수=step수라 암기 점검으로 부족하다 -> 작은 배치로 step 수 확보
+    sets = [f"data.overfit_n={a.n}", f"train.lr={a.lr}", f"train.epochs={a.epochs}", f"train.batch_size={a.batch}",
+            f"train.micro_batch_size={a.batch}", "train.warmup_epochs=1", "train.early_stopping_patience=999"]
     gpu = get_gpus(cfg)[0]
     st = classify(cfg, a.name)
     if st == "done":
@@ -437,7 +439,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("name", nargs="?", default="base"); s.add_argument("--test", action="store_true")
     s = sub.add_parser("overfit", parents=[common]); s.set_defaults(fn=cmd_overfit)
     s.add_argument("--name", default="overfit"); s.add_argument("--n", type=int, default=16)
-    s.add_argument("--lr", default="1e-3"); s.add_argument("--epochs", type=int, default=40)
+    s.add_argument("--lr", default="3e-4"); s.add_argument("--epochs", type=int, default=60)
+    s.add_argument("--batch", type=int, default=4, help="overfit용 배치(step 수 확보). n/batch step/epoch")
     s = sub.add_parser("train", parents=[common]); s.set_defaults(fn=cmd_train)
     s.add_argument("name"); s.add_argument("--gpu", type=int); s.add_argument("--set", nargs="+", action="extend")
     s = sub.add_parser("sweep", parents=[common]); s.set_defaults(fn=cmd_sweep)
