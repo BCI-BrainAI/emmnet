@@ -6,7 +6,7 @@ EEG-MRI Multimodal neural network (EMMNet, Lee et al., ICPR 2026)의 **MRI 파�
 
 ## 현재 상태 (2026-10-06)
 
-- 구현 완료: MRI Encoder, 데이터셋/전처리, 학습·평가·분석 파이프라인, CAM 계산 함수. pytest 23개 통과(CPU, 합성 데이터).
+- 구현 완료: MRI Encoder, 데이터셋/전처리, 학습·평가·분석 파이프라인, CAM 계산 함수. pytest 28개 통과(CPU, 합성 데이터).
 - 베이스라인 학습(단일 GPU) 종료, 결과 분석 전. 실데이터·GPU 검증은 서버에서 진행.
 - 미구현(스텁, `NotImplementedError`): `models/eeg_encoder.py`, `models/fusion.py`, `data/eeg_dataset.py` — EEG 담당자 배정 후 작성.
 - 원 저자 저장소(`github.com/BCI-BrainAI/emmnet`)는 인증 문제로 접근 불가 — 논문(`emmnet.pdf`)과 Med3D 논문 기반 자체 재현.
@@ -24,14 +24,16 @@ pytest -q
 ## 사용 (전체 절차는 `docs/SERVER_RUNBOOK.md`)
 
 ```bash
-export EMMNET_DATA=<전처리 out_dir>
-python scripts/check_mri_dataset.py --processed-dir $EMMNET_DATA      # 학습 전 점검
-python scripts/cache_norm_stats.py  --processed-dir $EMMNET_DATA      # 정규화 통계 캐시 + 전경비율 경고
-bash scripts/run_experiment.sh base --gpu 0 --bg -- --set train.lr=1e-4   # 학습 + train/val 평가 (test 미실행)
-python scripts/analyze_results.py --run-dir checkpoints/base           # 곡선 진단, AUC+CI, 그룹별 rate, age-only AUC
-python scripts/evaluate_mri_encoder.py --checkpoint checkpoints/base/best.pth --splits test   # run당 1회(잠금)
+python scripts/emmnet.py init --data <전처리 out_dir> --gpus 0 1   # 1회
+python scripts/emmnet.py setup --install-torch                     # 환경 설치/검증
+python scripts/emmnet.py check                                     # 데이터 점검
+python scripts/emmnet.py train base2                               # 학습(백그라운드) + train/val 평가
+python scripts/emmnet.py status                                    # 진행/요약
+python scripts/emmnet.py sweep                                     # lr sweep (GPU 자동 분배)
+python scripts/emmnet.py final --lr <선택값>                        # 시드 3개 최종 학습
+python scripts/emmnet.py test final_s0 final_s1 final_s2           # test 1회 + 평균±표준편차
 ```
-설정은 `configs/mri_encoder.yaml`, 덮어쓰기는 `--set key=value`(YAML에 있는 키만 허용).
+개별 스크립트(`run_experiment.sh`, `evaluate_mri_encoder.py`, `analyze_results.py` 등)와 `--set key=value` override는 런북 참조.
 
 ## 폴더 구조
 
@@ -40,6 +42,7 @@ emmnet/
 ├── pyproject.toml, conftest.py
 ├── configs/            mri_dataset.yaml (전처리), mri_encoder.yaml (학습)
 ├── scripts/
+│   ├── emmnet.py               서버 작업 자동화 CLI(init/setup/check/train/sweep/final/test/status)
 │   ├── preprocess_mri.py       ADNI NIfTI -> 256^3 .npy + manifest
 │   ├── check_mri_dataset.py    분할/누수/제외사유/QC 미리보기
 │   ├── cache_norm_stats.py     percentile_zscore 통계 캐시, fg_frac 경고

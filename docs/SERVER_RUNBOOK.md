@@ -3,6 +3,24 @@
 main에는 반영하지 않는다. 이 브랜치에서만 작업한다. 모든 명령은 repo 루트에서 실행한다.
 직접 코드를 타이핑하는 단계는 없다(스크립트/`--set`으로 대체).
 
+## 빠른 시작: 자동화 CLI (`scripts/emmnet.py`)
+경로/GPU는 `init`에 1회만 입력한다(`.emmnet.json`, git 미추적). 이후 명령은 짧다. 모든 명령에 `--dry-run`을 붙이면 실행 없이 명령만 출력한다.
+```bash
+git checkout integration/mri-train && git pull         # (configs 로컬 수정이 있으면 git stash)
+python scripts/emmnet.py init --data <전처리 out_dir> --gpus 0 1
+python scripts/emmnet.py setup --install-torch          # torch(cu126)/CUDA 확인, pip install -e, pytest, 가중치 해시
+python scripts/emmnet.py check                          # 데이터 점검 + 정규화 통계 캐시 + split_counts
+python scripts/emmnet.py baseline base                  # 기존 base run: train/val 평가 + 분석 (test는 --test, 1회)
+python scripts/emmnet.py overfit                        # overfit 점검(train_auc ~1.0 이어야 정상)
+python scripts/emmnet.py train base2                    # 본 학습(백그라운드). --gpu N, --set train.lr=3e-4 ...
+python scripts/emmnet.py status                         # 전체 run 요약(state/best val AUC/train AUC/test AUC)
+python scripts/emmnet.py log base2                      # 학습 로그 tail
+python scripts/emmnet.py sweep                          # lr {1e-3,3e-4,1e-4,3e-5}를 GPU에 자동 분배(이미 있는 run은 건너뜀)
+python scripts/emmnet.py final --lr <선택값>             # 시드 0 1 2 최종 학습(GPU 분배)
+python scripts/emmnet.py test final_s0 final_s1 final_s2   # run별 test 1회 + 평균±표준편차
+```
+설치만 직접 하려면 아래 0절을 따른다. 이하 절은 CLI가 내부에서 호출하는 개별 명령의 상세 설명이다.
+
 ## 0. 환경
 ```bash
 git fetch origin && git checkout integration/mri-train
@@ -10,7 +28,7 @@ git fetch origin && git checkout integration/mri-train
 python -m venv .venv && source .venv/bin/activate        # 서버 Python 3.14면 3.11/3.12 환경 권장
 pip install torch --index-url https://download.pytorch.org/whl/cu126   # 드라이버 CUDA 12.4 -> cu126 휠 (실제 설치 방법은 아래 기록란에 남길 것)
 pip install -e ".[dev]"                # pyproject.toml 기준(matplotlib 포함)
-pytest -q                               # 로컬 기준 23개 통과 확인
+pytest -q                               # 로컬 기준 28개 통과 확인
 export EMMNET_DATA=<전처리 out_dir>      # 이후 모든 스크립트가 데이터 경로로 사용(--processed-dir 생략 가능)
 ```
 설치 기록(서버에서 실제로 쓴 torch 설치 명령/버전): `__________`
