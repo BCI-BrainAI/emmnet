@@ -8,6 +8,7 @@ A) 입력 점검: NaN/범위/전경 비율, 샘플 간 상관(입력이 서로 �
 B) 초기(사전학습) feature 점검: 샘플 간 feature 코사인 유사도/상대 변동(feature가 입력에 둔감한가)
 C) 1-step grad norm: backbone / projection / head
 D) 변형별 짧은 암기 실험: base | noamp(bf16 끔) | bn_eval(BN 통계 고정) | bce(focal 대신) | scratch(사전학습 없음)
+   | focal_g0(alpha .25, gamma 0) | focal_g1(gamma 1) | focal_a5(alpha .5, gamma 2)
    각 변형 결과: 최종 train loss, eval-mode AUC, logit 표준편차(상수 출력이면 ~0)
 """
 from __future__ import annotations
@@ -32,7 +33,7 @@ from training.losses import BinaryFocalLoss  # noqa: E402
 from training.trainer import make_loader  # noqa: E402
 from utils.config import add_config_args, load_config  # noqa: E402
 
-VARIANTS = ["base", "noamp", "bn_eval", "bce", "scratch"]
+VARIANTS = ["base", "noamp", "bn_eval", "bce", "scratch", "focal_g0", "focal_g1", "focal_a5"]
 
 
 def build(config, pretrained: bool) -> MRIClassifier:
@@ -79,7 +80,8 @@ def run_variant(name, config, x, y, device, steps, batch, lr):
     torch.manual_seed(0)
     model = build(config, pretrained=(name != "scratch")).to(device)
     amp = name != "noamp"
-    crit = (lambda lg, t: F.binary_cross_entropy_with_logits(lg.float(), t.float())) if name == "bce" else BinaryFocalLoss(0.25, 2.0)
+    focal = {"focal_g0": (0.25, 0.0), "focal_g1": (0.25, 1.0), "focal_a5": (0.5, 2.0)}.get(name, (0.25, 2.0))
+    crit = (lambda lg, t: F.binary_cross_entropy_with_logits(lg.float(), t.float())) if name == "bce" else BinaryFocalLoss(*focal)
     new = list(model.encoder.projection.parameters()) + list(model.head.parameters())
     ids = {id(p) for p in new}
     opt = torch.optim.AdamW([{"params": [p for p in model.parameters() if id(p) not in ids], "lr": lr},
@@ -123,7 +125,7 @@ def main() -> None:
     ap.add_argument("--steps", type=int, default=120)
     ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--variants", nargs="+", default=VARIANTS, choices=VARIANTS)
+    ap.add_argument("--variants", nargs="+", default=VARIANTS[:5], choices=VARIANTS)
     ap.add_argument("--out", default=None, help="결과 JSON 저장 경로")
     args = ap.parse_args()
     overrides = list(args.overrides or []) + [f"data.overfit_n={args.n}"]
