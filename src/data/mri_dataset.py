@@ -1,8 +1,9 @@
 """ADNI MRI 전처리 및 PyTorch Dataset.
 
-논문 기준: zero-padding 후 256^3 resize, 영상별 min-max [0, 1]
-(EMMNet Sec 3.1, p.283). Med3D의 percentile truncation + z-score와
-다르므로 이번 구현에서는 EMMNet의 정규화를 따른다.
+전처리(저장): zero-padding 후 256^3 resize, 영상별 min-max [0, 1]
+(EMMNet Sec 3.1, p.283). 저장된 .npy는 min-max 값이다.
+학습 시 정규화(MRIDataset): 기본 percentile_zscore(Med3D 사전학습과 동일),
+minmax는 저장값 그대로. 선택은 YAML data.normalization.
 
 이번 구현의 결정 사항
 --------------------
@@ -273,7 +274,25 @@ def build_mri_dataset(raw_dir: str | Path, out_dir: str | Path, *, metadata_dir:
 NORMALIZATIONS = ("percentile_zscore", "minmax")
 
 
-def med3d_normalize(volume: np.ndarray, low_pct: float = 0.5, high_pct: float = 99.5) -> np.ndarray:
+NORM_STATS_FILE = "norm_stats.csv"
+
+
+def _stats_from_fg(vals: np.ndarray, low_pct: float, high_pct: float, fg_frac: float) -> dict[str, float]:
+    lo, hi = np.percentile(vals, [low_pct, high_pct])
+    clipped = np.clip(vals, lo, hi)
+    return dict(lo=float(lo), hi=float(hi), mean=float(clipped.mean()), std=float(clipped.std()), fg_frac=fg_frac)
+
+
+def volume_norm_stats(volume: np.ndarray, low_pct: float = 0.5, high_pct: float = 99.5) -> dict[str, float]:
+    """med3d_normalize가 쓰는 통계(lo, hi, mean, std)와 전경 비율. scripts/cache_norm_stats.py가 캐시한다."""
+    fg = volume > 0
+    if not fg.any():
+        raise ValueError("Empty foreground")
+    return _stats_from_fg(volume[fg], low_pct, high_pct, float(fg.mean()))
+
+
+def med3d_normalize(volume: np.ndarray, low_pct: float = 0.5, high_pct: float = 99.5,
+                    stats: dict[str, float] | None = None) -> np.ndarray:
     """Med3D 사전학습 방식 정규화 [Med3D Eq.2]: percentile truncation 후 z-score.
 
     - 전경(volume > 0) 복셀로 percentile/mean/std를 계산한다.
@@ -281,18 +300,22 @@ def med3d_normalize(volume: np.ndarray, low_pct: float = 0.5, high_pct: float = 
       (Med3D 공식 코드는 배경을 N(0,1) 난수로 채우지만 재현성을 위해 0을 사용.)
     - 저장된 .npy는 min-max 값이며 min-max는 아핀 변환이라 percentile+z-score 결과가
       원본 강도에 직접 적용한 것과 동일하다. 따라서 전처리 산출물은 그대로 쓴다.
+    - stats(캐시된 lo/hi/mean/std)를 주면 percentile/mean/std 계산을 생략한다(결과 동일, 매 epoch 비용 절감).
+    - 주의: 전경 마스크는 `volume > 0`이다. 원본 최솟값이 음수라 zero-padding이 min-max 후 양수가 되거나
+      배경 잡음이 있으면 전경 비율이 과대(>0.9)해진다. norm_stats.csv의 fg_frac으로 확인할 것.
     """
     fg = volume > 0
     if not fg.any():
         raise ValueError("Empty foreground")
     vals = volume[fg]
-    lo, hi = np.percentile(vals, [low_pct, high_pct])
-    vals = np.clip(vals, lo, hi)
-    std = float(vals.std())
+    if stats is None:
+        stats = _stats_from_fg(vals, low_pct, high_pct, float(fg.mean()))
+    vals = np.clip(vals, stats["lo"], stats["hi"])
+    std = float(stats["std"])
     if std < 1e-8:
         raise ValueError("Zero-variance foreground")
     out = np.zeros_like(volume, dtype=np.float32)
-    out[fg] = ((vals - vals.mean()) / std).astype(np.float32)
+    out[fg] = ((vals - stats["mean"]) / std).astype(np.float32)
     return out
 
 
@@ -343,6 +366,13 @@ class MRIDataset(Dataset):
         self.records = [row for row in records if row["split"] == split]
         if not self.records:
             raise ValueError(f"No samples for split={split}")
+        self.labels_verified = all(str(r.get("label_verified", "")).strip() == "True" for r in self.records)
+        self.norm_stats: dict[str, dict[str, float]] = {}
+        stats_path = self.root / NORM_STATS_FILE
+        if self.normalization == "percentile_zscore" and stats_path.is_file():
+            with stats_path.open(encoding="utf-8", newline="") as f:
+                self.norm_stats = {r["image_id"]: {k: float(r[k]) for k in ("lo", "hi", "mean", "std")}
+                                   for r in csv.DictReader(f)}
 
     def __len__(self) -> int:
         return len(self.records)
@@ -355,5 +385,5 @@ class MRIDataset(Dataset):
         if not np.isfinite(volume).all() or volume.min() < 0 or volume.max() > 1:
             raise ValueError(f"Invalid normalized MRI values: {row['image_id']}")
         if self.normalization == "percentile_zscore":
-            volume = med3d_normalize(volume)
+            volume = med3d_normalize(volume, stats=self.norm_stats.get(row["image_id"]))
         return torch.from_numpy(np.ascontiguousarray(volume)).unsqueeze(0), row["label"]

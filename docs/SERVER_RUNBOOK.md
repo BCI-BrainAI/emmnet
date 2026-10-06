@@ -1,90 +1,97 @@
 # MRI 단독 학습 서버 실행 절차 (integration/mri-train)
 
-main에는 반영하지 않는다. 이 브랜치에서만 작업한다.
+main에는 반영하지 않는다. 이 브랜치에서만 작업한다. 모든 명령은 repo 루트에서 실행한다.
+직접 코드를 타이핑하는 단계는 없다(스크립트/`--set`으로 대체).
 
 ## 0. 환경
 ```bash
 git fetch origin && git checkout integration/mri-train
-python -m venv .venv && source .venv/bin/activate
-pip install torch numpy pyyaml nibabel pytest matplotlib   # torch는 서버 CUDA 버전에 맞는 휠
-pytest -q                                                  # 합성 데이터 스모크 포함 15개 통과 확인
+# 서버 로컬 YAML 수정이 남아 있으면: git stash (micro_batch_size=4는 이제 커밋된 YAML 기본값)
+python -m venv .venv && source .venv/bin/activate        # 서버 Python 3.14면 3.11/3.12 환경 권장
+pip install torch --index-url https://download.pytorch.org/whl/cu126   # 드라이버 CUDA 12.4 -> cu126 휠 (실제 설치 방법은 아래 기록란에 남길 것)
+pip install -e ".[dev]" matplotlib      # pyproject.toml 기준. matplotlib 포함
+pytest -q                               # 로컬 기준 24개(신규 tooling 7개 포함) 통과 확인
+export EMMNET_DATA=<전처리 out_dir>      # 이후 모든 스크립트가 데이터 경로로 사용(--processed-dir 생략 가능)
 ```
+설치 기록(서버에서 실제로 쓴 torch 설치 명령/버전): `__________`
 
 ## 1. 사전학습 가중치 (확정: resnet_18.pth)
 ```bash
-ls -l pretrained/resnet_18.pth
 sha256sum pretrained/resnet_18.pth   # 로컬 값: 38b3a174...f61da3
 ```
-`configs/mri_encoder.yaml`의 `model.pretrained_path`는 `resnet_18.pth`로 고정. (`resnet_18_23dataset.pth`는 해시가 달라 사용하지 않음.)
+`model.pretrained_path`는 `resnet_18.pth`로 고정. (`resnet_18_23dataset.pth`는 해시가 달라 사용하지 않음.)
 학습 스크립트는 backbone `missing/unexpected` 키가 하나라도 있으면 중단한다.
 
 ## 2. 데이터 전처리 (ADNI)
 `configs/mri_dataset.yaml`의 `raw_dir`, `metadata_dir`, `out_dir`를 서버 경로로 확인.
 ```bash
-python scripts/preprocess_mri.py --config configs/mri_dataset.yaml --dry-run   # 경로/설정만 검사
-python scripts/preprocess_mri.py --config configs/mri_dataset.yaml            # 실제 실행 (out_dir는 새 폴더)
-du -sh <out_dir>      # 256^3 float32 = 샘플당 ~64MB
+python scripts/preprocess_mri.py --config configs/mri_dataset.yaml --dry-run
+python scripts/preprocess_mri.py --config configs/mri_dataset.yaml            # out_dir는 새 폴더 (이미 파일이 있으면 중단됨; run.json으로 확인)
 ```
 산출: `manifest.csv`, `selection.csv`, `excluded.csv`, `run.json`, `volumes/*.npy`, `provenance/*.json`
 
 ## 3. 산출물 점검 (학습 전 필수)
 ```bash
-python scripts/check_mri_dataset.py --processed-dir <out_dir> --n-preview 8
+python scripts/check_mri_dataset.py --processed-dir $EMMNET_DATA --n-preview 8
+python scripts/cache_norm_stats.py  --processed-dir $EMMNET_DATA     # 정규화 통계 캐시 + 전경비율(fg_frac) 경고. 학습 속도 개선(결과 동일)
 ```
 확인:
-- split별 CN/(MCI+AD) 모두 존재 (한 클래스만 있으면 AUC nan)
-- subject 중복 0
-- `excluded.csv` 사유 분포 (`multiple_screening_scaled_candidates`, `image_missing` 비율)
-- `qc_preview.png`로 방향/크롭/배경 육안 확인 -> OK이면 qc_status 갱신
-- 전경 비율 경고(>0.9)가 뜨면 배경이 0이 아니므로 정규화 전 영상 확인
+- split별 CN/(MCI+AD) 모두 존재, subject 중복 0
+- `excluded.csv` 사유 분포(`multiple_screening_scaled_candidates` 비율 = 표본 손실/선택 편향)
+- `qc_preview.png` 육안 확인 후 qc_status 갱신
+- `cache_norm_stats.py`의 fg_frac 경고(>0.9): 전경 마스크 `volume>0`이 깨졌다는 신호 -> z-score 통계 오염
 
-## 4. GPU 메모리 사전 측정 (256^3, 미검증)
+## 4. GPU 메모리 사전 측정
 ```bash
-python - <<'PY'
-import sys, torch; sys.path.insert(0,'src')
-from models.mri.classifier import MRIClassifier
-m = MRIClassifier().cuda(); opt = torch.optim.AdamW(m.parameters())
-for bs in (1, 2, 4):
-    try:
-        torch.cuda.reset_peak_memory_stats()
-        x = torch.randn(bs,1,256,256,256, device='cuda')
-        with torch.autocast('cuda', dtype=torch.bfloat16): out = m(x).sum()
-        out.backward(); opt.step(); opt.zero_grad()
-        print(bs, f"{torch.cuda.max_memory_allocated()/2**30:.1f} GiB")
-    except torch.cuda.OutOfMemoryError:
-        print(bs, "OOM"); break
-PY
+CUDA_VISIBLE_DEVICES=0 python scripts/profile_memory.py --sizes 1 2 4 8
 ```
-`train.micro_batch_size`를 OOM 나지 않는 최대값으로 설정. effective batch는 `batch_size`(16) 유지(accumulation 자동).
+권장 `micro_batch_size`를 `--set train.micro_batch_size=<값>`으로 적용. 측정 기록(256^3, bf16): bs 1/2/4/8 = 1.8/3.6/6.6/12.8 GiB (bs8은 OOM 직전이라 미사용).
 
 ## 5. 학습 / 평가
-### 단일 GPU
+### 5-0. 점검 학습 (본 학습 전)
 ```bash
-CUDA_VISIBLE_DEVICES=0 python scripts/train_mri_encoder.py --config configs/mri_encoder.yaml \
-    --processed-dir <out_dir> --checkpoint-dir checkpoints/run1 2>&1 | tee checkpoints/run1.log
+# subset 스모크
+python scripts/make_subset.py --processed-dir $EMMNET_DATA --out-dir <subset_dir> --per-split 18 4 4
+# overfit 확인: train_auc -> ~1.0 이 되어야 파이프라인/라벨/정규화가 정상
+bash scripts/run_experiment.sh overfit --gpu 0 -- --set data.overfit_n=16 train.lr=1e-3 train.epochs=40 train.early_stopping_patience=999
+python scripts/analyze_results.py --run-dir checkpoints/overfit
 ```
 
-### GPU 2장 (DDP, 한 실험을 두 장으로)
+### 5-1. 단일 GPU 본 학습 (권장)
 ```bash
-torchrun --standalone --nproc_per_node=2 scripts/train_mri_encoder.py --config configs/mri_encoder.yaml \
-    --processed-dir <out_dir> --checkpoint-dir checkpoints/run_ddp 2>&1 | tee checkpoints/run_ddp.log
+bash scripts/run_experiment.sh base --gpu 0 --bg                  # 백그라운드(nohup), 로그: checkpoints/base/train.log
+bash scripts/run_experiment.sh lr3e-4 --gpu 0 --bg -- --set train.lr=3e-4 train.seed=1
 ```
-- effective batch = `micro_batch_size` x GPU수 x accumulation = `batch_size`(16). 예: micro 2, GPU 2 -> accum 4. 배수가 아니면 에러.
-- BN은 SyncBatchNorm(`train.sync_bn: true`)으로 GPU 간 통계 공유. GPU당 micro batch가 작아도 BN이 덜 불안정.
-- val은 rank0만 평가하고 early stop 판단을 전 rank에 broadcast. 체크포인트도 rank0만 저장(`best.pth`는 단일 GPU와 동일 포맷이라 evaluate 스크립트 그대로 사용).
-- 로그의 train_loss는 rank0 샤드 기준.
-- 대안: GPU마다 시드/lr이 다른 실험을 각각 `CUDA_VISIBLE_DEVICES=0`, `=1`로 동시에 실행(lr sweep, 복수 시드에 효율적).
-- 로컬 샌드박스처럼 호스트명 조회가 안 되는 환경에서는 `--rdzv-backend=c10d --rdzv-endpoint=127.0.0.1:<port> --local-addr=127.0.0.1`과 `GLOO_SOCKET_IFNAME=lo`가 필요(서버는 보통 불필요).
-- NCCL은 4080에서 P2P가 막혀 있으면 느릴 수 있음: 문제 시 `NCCL_P2P_DISABLE=1`.
+- 자동 저장: `config.yaml`(해석된 설정), `meta.json`(git sha/dirty/환경/label_verified), `history.json`(매 epoch),
+  `best.pth`(val AUC 최대, val 기반 Youden threshold 포함), `last.pth`, `train_metrics.json`/`val_metrics.json`, `predictions_{train,val}.csv`
+- test는 자동 실행하지 않는다. 같은 이름의 run 폴더가 있으면 거부(덮어쓰기 방지). 폴더 위치는 `CKPT_ROOT`로 변경 가능.
+- `--set`은 YAML에 있는 키만 허용(오타 방지). 예: `--set train.lr=3e-4 train.weight_decay=0.05`
 
-### 평가
+### 5-2. DDP (사용하지 않기로 결정했으나 구현/CPU 테스트됨)
 ```bash
-CUDA_VISIBLE_DEVICES=0 python scripts/evaluate_mri_encoder.py --checkpoint checkpoints/run1/best.pth \
-    --processed-dir <out_dir> --split test --out-json checkpoints/run1/test_metrics.json
+torchrun --standalone --nproc_per_node=2 scripts/train_mri_encoder.py --checkpoint-dir checkpoints/run_ddp
 ```
-- 모델 선택: val AUC 최대 epoch (`best.pth`), 임계값은 best epoch의 val에서 Youden J로 결정해 test에 고정.
-- 정규화: `data.normalization: percentile_zscore`(Med3D와 동일). `minmax`와 비교하려면 yaml만 변경.
-- BN 불안정 시 `train.freeze_bn: true` 비교(DDP+sync_bn과 함께 쓰는 의미는 작음).
+effective batch = `micro_batch_size` x GPU수 x accumulation = `batch_size`(16). 배수가 아니면 에러. val은 rank0만 평가.
+
+### 5-3. 분석 (test 전)
+```bash
+python scripts/analyze_results.py --run-dir checkpoints/base
+```
+출력: `analysis.json`, `curves.png`, 콘솔 요약
+- history 진단(best==last, 미학습, 과적합, val 변동 큼), NaN 검사
+- split별 AUC + 부트스트랩 95% CI, sens/spec(체크포인트 임계값), 클래스별 확률 분위수
+- MCI/AD 등 research_group별 mean prob / positive rate, age-only AUC, Spearman(prob, age)
+- 주의: `train_auc`는 학습 중 BN train-mode 확률로 계산한 값(추가 forward 없음). eval-mode train AUC는 `predictions_train.csv` 기준(`analysis.json`의 train).
+  val 지표 + val 기반 임계값 조합은 낙관적이다.
+
+### 5-4. test 평가 (run당 1회)
+```bash
+python scripts/evaluate_mri_encoder.py --checkpoint checkpoints/base/best.pth --splits test
+python scripts/analyze_results.py --run-dir checkpoints/base        # test CI 포함 재생성
+```
+- 평가는 체크포인트에 저장된 **학습 당시 config**(정규화/모델 크기)를 사용한다. YAML을 나중에 바꿔도 영향 없음.
+- `.test_used.json` 잠금: 같은 run에서 test 재실행은 거부. 의도한 재평가만 `--force`(기록은 남음).
+- `last.pth`(threshold 없음)는 평가 거부.
 
 ## 6. 하이퍼파라미터 출처
 | 항목 | 값 | 출처 |
@@ -96,10 +103,14 @@ CUDA_VISIBLE_DEVICES=0 python scripts/evaluate_mri_encoder.py --checkpoint check
 | feature dim | 256 | EMMNet Sec 4.2, p.286 |
 | lr, weight decay, epochs, warmup 길이, head lr 배수, grad clip | 1e-4, 1e-2, 50, 2, x10, 1.0 | **논문에 없음 (팀 기본값)** |
 
-참고: Med3D Sec 4.2 (p.8)는 사전학습 모델 fine-tuning에 Adam lr 0.001을 사용(분류 head를 쓰는 별개 과제). 사전학습 자체는 SGD lr 0.1, momentum 0.9, weight decay 0.001 (Sec 4.1, p.6).
-권장: lr sweep {1e-3, 3e-4, 1e-4, 3e-5}를 val AUC로 비교(필요 시 test는 마지막 1회만).
+참고: Med3D Sec 4.2 (p.8) fine-tuning Adam lr 0.001(별개 과제). Med3D 사전학습은 SGD lr 0.1, momentum 0.9, wd 0.001 (Sec 4.1, p.6).
+lr sweep {1e-3, 3e-4, 1e-4, 3e-5}는 val AUC로만 선택(test는 최종 1회):
+```bash
+for lr in 1e-3 3e-4 1e-4 3e-5; do bash scripts/run_experiment.sh lr$lr --gpu 0 -- --set train.lr=$lr; done
+```
+복수 시드: `-- --set train.seed=1` (평균±표준편차 보고).
 
 ## 7. 라벨 / 미해결
-- 라벨 확정: CN=0, MCI=1, AD=1 (`LABELS` in mri_dataset.py와 일치).
-- 진단 변경자 제외 여부, Screening 진단과 researchGroup 일치 여부는 미검증(`label_verified=False`).
+- 라벨 확정: CN=0, MCI=1, AD=1. 진단 변경자 제외 여부, Screening 진단과 researchGroup 일치는 미검증(`label_verified=False`; `meta.json`과 학습/분석 로그에 경고).
+- 모델 선택(val AUC)과 임계값(Youden)이 같은 val에서 정해지므로 val이 작으면 노이즈에 민감 -> `split_counts`와 CI를 함께 볼 것.
 - 최종 보고는 단일 시드가 아닌 복수 시드 평균/표준편차 권장.

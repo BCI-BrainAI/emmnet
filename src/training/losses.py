@@ -1,6 +1,7 @@
 """손실 함수."""
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -26,3 +27,12 @@ class BinaryFocalLoss(nn.Module):
         if self.reduction == "sum":
             return loss.sum()
         return loss
+
+
+def focal_from_probs(y_true, prob, alpha: float = 0.25, gamma: float = 2.0, eps: float = 1e-7) -> float:
+    """BinaryFocalLoss와 동일한 식을 확률/numpy로 계산(검증 로그용). train_loss(focal)와 같은 척도로 비교하기 위함."""
+    y = np.asarray(y_true, dtype=np.float64)
+    p = np.clip(np.asarray(prob, dtype=np.float64), eps, 1 - eps)
+    p_t = np.where(y == 1, p, 1 - p)
+    alpha_t = alpha * y + (1 - alpha) * (1 - y)
+    return float(np.mean(-alpha_t * (1 - p_t) ** gamma * np.log(p_t)))

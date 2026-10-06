@@ -3,6 +3,7 @@ data:
   processed_dir: ../data/processed/adni_screening_scaled_v1   # preprocess_mri.py out_dir 복사/심볼릭 링크
   normalization: percentile_zscore   # Med3D 사전학습과 동일(0.5~99.5 percentile truncation 후 z-score). minmax도 가능
   num_workers: 4
+  overfit_n: null       # 정수면 train을 클래스 균형 N개로 제한(overfit 점검용). 예: --set data.overfit_n=16
 
 input:
   channels: 1
@@ -26,7 +27,7 @@ train:
   weight_decay: 1.0e-2  # [팀 기본값] AdamW 관례값
   warmup_epochs: 2      # [논문: warmup 사용, 길이 미기재] linear warmup 후 cosine decay
   batch_size: 16        # [논문] effective batch = micro_batch_size x GPU 수 x accumulation
-  micro_batch_size: 2   # GPU당 batch. 256^3에서 OOM 나지 않는 최대값(runbook 4번 측정)
+  micro_batch_size: 4   # GPU당 batch. 256^3 bf16 실측(scripts/profile_memory.py): bs1/2/4/8 = 1.8/3.6/6.6/12.8 GiB, bs8은 OOM 직전이라 4 사용
   epochs: 50            # [팀 기본값]
   early_stopping_patience: 10   # [팀 기본값]
   loss: focal
@@ -37,5 +38,5 @@ train:
   sync_bn: true         # DDP(torchrun) 시 SyncBatchNorm으로 BN 통계를 GPU 간 공유
   freeze_bn: false      # micro batch가 매우 작아 BN이 불안정하면 true로 비교
   seed: 42
+  deterministic: false  # true면 cudnn deterministic/benchmark off (느려질 수 있음)
   device: auto
-  checkpoint_dir: ../checkpoints

@@ -20,21 +20,33 @@ from typing import Any
 
 import numpy as np
 import torch
+import yaml
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
 
 from data.mri_dataset import MRIDataset
 from evaluation.metrics import summarize, youden_threshold
-from training.losses import BinaryFocalLoss
+from training.losses import BinaryFocalLoss, focal_from_probs
+from utils.runinfo import run_meta
 
 
-def set_seed(seed: int) -> None:
+def set_seed(seed: int, deterministic: bool = False) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    if deterministic:  # 속도 저하 가능. 3D conv/pool 일부 연산은 완전 결정적이지 않을 수 있다.
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def _worker_init(worker_id: int) -> None:
+    """DataLoader worker별 numpy/random 시드 고정(torch 시드는 base_seed로 자동 설정됨)."""
+    seed = torch.initial_seed() % 2**32
+    np.random.seed(seed)
+    random.seed(seed)
 
 
 def resolve_device(name: str) -> torch.device:
@@ -56,15 +68,35 @@ def setup_distributed(device_name: str) -> tuple[bool, int, int, torch.device]:
     return True, rank, world, torch.device("cuda", local_rank) if use_cuda else torch.device("cpu")
 
 
+def overfit_indices(dataset: MRIDataset, n: int) -> list[int]:
+    """클래스 균형(앞에서부터)으로 n개 인덱스. overfit 점검 전용."""
+    by_class = {0: [], 1: []}
+    for i, r in enumerate(dataset.records):
+        by_class[r["label"]].append(i)
+    half = max(1, n // 2)
+    return sorted(by_class[0][:half] + by_class[1][:n - half])
+
+
+def dataset_records(loader: DataLoader) -> list[dict[str, Any]]:
+    """loader가 (Subset일 수 있는) MRIDataset에서 내보내는 순서 그대로의 manifest 행."""
+    ds = loader.dataset
+    if isinstance(ds, Subset):
+        return [ds.dataset.records[i] for i in ds.indices]
+    return ds.records
+
+
 def make_loader(config: dict[str, Any], split: str, shuffle: bool, batch_size: int,
                 distributed: bool = False) -> DataLoader:
     data = config["data"]
     dataset = MRIDataset(data["processed_dir"], split, normalization=data.get("normalization", "percentile_zscore"))
+    if split == "train" and data.get("overfit_n"):
+        dataset = Subset(dataset, overfit_indices(dataset, int(data["overfit_n"])))
     workers = int(data.get("num_workers", 0))
     sampler = DistributedSampler(dataset, shuffle=shuffle, drop_last=False) if distributed else None
+    gen = torch.Generator().manual_seed(int(config.get("train", {}).get("seed", 42)))
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle and sampler is None, sampler=sampler,
                       num_workers=workers, pin_memory=torch.cuda.is_available(), drop_last=False,
-                      persistent_workers=workers > 0)
+                      persistent_workers=workers > 0, generator=gen, worker_init_fn=_worker_init)
 
 
 @torch.no_grad()
@@ -96,7 +128,7 @@ def train(model, config: dict[str, Any], checkpoint_dir: str | Path) -> dict[str
     cfg = config["train"]
     is_ddp, rank, world, device = setup_distributed(cfg.get("device", "auto"))
     main = rank == 0
-    set_seed(int(cfg.get("seed", 42)))
+    set_seed(int(cfg.get("seed", 42)), bool(cfg.get("deterministic", False)))
     amp = bool(cfg.get("amp", True))
     model.to(device)
     if is_ddp and cfg.get("sync_bn", True):
@@ -130,6 +162,14 @@ def train(model, config: dict[str, Any], checkpoint_dir: str | Path) -> dict[str
     out_dir = Path(checkpoint_dir)
     if main:
         out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "config.yaml").write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        verified = bool(train_loader.dataset.dataset.labels_verified if isinstance(train_loader.dataset, Subset)
+                        else train_loader.dataset.labels_verified)
+        (out_dir / "meta.json").write_text(json.dumps(run_meta({
+            "label_verified": verified, "world": world, "micro_batch_size": micro, "accum": accum,
+            "n_train": len(train_loader.dataset), "n_val": len(val_loader.dataset)}), indent=2), encoding="utf-8")
+        if not verified:
+            print("[WARN] label_verified=False: 라벨(CN/MCI/AD)이 진단 시점 기준으로 검증되지 않았다.", flush=True)
     patience = int(cfg.get("early_stopping_patience", 10))
     best_auc, best_epoch, history = -1.0, -1, []
     epoch = 0
@@ -145,8 +185,10 @@ def train(model, config: dict[str, Any], checkpoint_dir: str | Path) -> dict[str
                 if isinstance(m, torch.nn.modules.batchnorm._BatchNorm):
                     m.eval()
         t0, running, n_seen = time.time(), 0.0, 0
+        tr_y, tr_p = [], []  # train-mode(BN train) 확률 -> train_auc (추가 forward 없음; eval-mode 값과는 다를 수 있음)
         optimizer.zero_grad(set_to_none=True)
         n_steps = len(train_loader)
+        full = n_steps // accum
         for step, (x, y) in enumerate(train_loader, 1):
             x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
             do_step = step % accum == 0 or step == n_steps
@@ -155,9 +197,12 @@ def train(model, config: dict[str, Any], checkpoint_dir: str | Path) -> dict[str
                 with torch.autocast(device.type, dtype=torch.bfloat16, enabled=amp and device.type == "cuda"):
                     logits = ddp_model(x)
                 loss = criterion(logits, y)
-                (loss / accum).backward()
+                group = accum if step <= full * accum else n_steps - full * accum  # 마지막 불완전 그룹은 실제 크기로 나눔
+                (loss / group).backward()
             running += loss.item() * len(y)
             n_seen += len(y)
+            tr_y.append(y.detach().cpu().numpy())
+            tr_p.append(torch.sigmoid(logits.detach().float()).cpu().numpy())
             if do_step:
                 torch.nn.utils.clip_grad_norm_(raw_model.parameters(), float(cfg.get("grad_clip", 1.0)))
                 optimizer.step()
@@ -167,11 +212,15 @@ def train(model, config: dict[str, Any], checkpoint_dir: str | Path) -> dict[str
         if main:
             yv, pv, val_bce = predict(raw_model, val_loader, device, amp)
             val = summarize(yv, pv, 0.5)
-            row = dict(epoch=epoch, train_loss=running / max(n_seen, 1), val_bce=val_bce, val_auc=val["auc"],
-                       val_acc_at_0p5=val["accuracy"], lr=optimizer.param_groups[0]["lr"],
-                       sec=round(time.time() - t0, 1))
+            ty, tp = np.concatenate(tr_y), np.concatenate(tr_p)
+            row = dict(epoch=epoch, train_loss=running / max(n_seen, 1),  # focal (train_loss와 val_focal은 같은 척도)
+                       train_auc=summarize(ty, tp, 0.5)["auc"], train_acc_at_0p5=summarize(ty, tp, 0.5)["accuracy"],
+                       val_focal=focal_from_probs(yv, pv, criterion.alpha, criterion.gamma),
+                       val_bce=val_bce, val_auc=val["auc"], val_acc_at_0p5=val["accuracy"],
+                       lr=optimizer.param_groups[0]["lr"], sec=round(time.time() - t0, 1))
             history.append(row)
             print(json.dumps(row), flush=True)
+            (out_dir / "history.json").write_text(json.dumps(history, indent=2), encoding="utf-8")  # 매 epoch 갱신
             auc = val["auc"] if np.isfinite(val["auc"]) else -1.0
             if auc > best_auc:
                 best_auc, best_epoch = auc, epoch

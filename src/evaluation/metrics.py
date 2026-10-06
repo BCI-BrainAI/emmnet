@@ -37,6 +37,7 @@ def confusion_metrics(y_true: np.ndarray, prob: np.ndarray, threshold: float = 0
     prec, sens = div(tp, tp + fp), div(tp, tp + fn)
     return dict(
         accuracy=div(tp + tn, len(y_true)), sensitivity=sens, specificity=div(tn, tn + fp),
+        balanced_accuracy=(div(tp, tp + fn) + div(tn, tn + fp)) / 2.0,
         precision=prec, f1=div(2 * prec * sens, prec + sens) if tp else (0.0 if len(y_true) else float("nan")),
         tp=float(tp), tn=float(tn), fp=float(fp), fn=float(fn), threshold=float(threshold),
     )
@@ -59,4 +60,30 @@ def youden_threshold(y_true: np.ndarray, prob: np.ndarray) -> float:
 def summarize(y_true, prob, threshold: float = 0.5) -> dict[str, float]:
     out = confusion_metrics(y_true, prob, threshold)
     out["auc"] = roc_auc(y_true, prob)
+    return out
+
+
+def bootstrap_auc_ci(y_true, score, n_boot: int = 2000, seed: int = 0, alpha: float = 0.05) -> tuple[float, float]:
+    """샘플 단위 percentile bootstrap AUC 신뢰구간. 클래스별 층화 재표본(양쪽 클래스 보장).
+
+    피험자당 영상이 1개(selection 규칙)이므로 샘플 단위 = 피험자 단위.
+    """
+    y_true, score = np.asarray(y_true).astype(int), np.asarray(score, dtype=np.float64)
+    pos, neg = np.flatnonzero(y_true == 1), np.flatnonzero(y_true == 0)
+    if len(pos) == 0 or len(neg) == 0:
+        return float("nan"), float("nan")
+    rng = np.random.default_rng(seed)
+    aucs = np.empty(n_boot)
+    for b in range(n_boot):
+        idx = np.concatenate([rng.choice(pos, len(pos)), rng.choice(neg, len(neg))])
+        aucs[b] = roc_auc(y_true[idx], score[idx])
+    return float(np.percentile(aucs, 100 * alpha / 2)), float(np.percentile(aucs, 100 * (1 - alpha / 2)))
+
+
+def class_quantiles(y_true, prob, qs=(0.05, 0.25, 0.5, 0.75, 0.95)) -> dict[str, dict[str, float]]:
+    y_true, prob = np.asarray(y_true).astype(int), np.asarray(prob, dtype=np.float64)
+    out = {}
+    for c in (0, 1):
+        v = prob[y_true == c]
+        out[str(c)] = {f"q{int(q * 100):02d}": float(np.quantile(v, q)) for q in qs} if len(v) else {}
     return out
