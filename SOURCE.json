@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/BCI-BrainAI/emmnet",
+  "branch": "feature/eeg-preprocessing",
+  "commit": "2550cb46f7a0dbfd2403661217d41fe8520d591e",
+  "unmodified_backbone_sha256": {
+    "resnet_1d.py": "328cbfdc1d5021d58a7965d119d10df79bc7790b2f4dcf272ee67948f1df106b",
+    "activation.py": "9414ac9f3d1f280f7a4d067c3f3560fd19817dfa62bb9b500027d6aa3d02367b",
+    "utils.py": "3db4e16b79963aff15438c39b1f2dfb6ccdf4b3a6d50ef77529234dc1b15c9b0"
+  },
+  "new_entrypoint": "run_eeg.py"
+}

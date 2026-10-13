@@ -1,173 +1,125 @@
-# caueeg-ceednet
+# EMMNet EEG 구현
 
-**CEEDNet**: **C**AU**E**EG **E**nd-to-end **D**eep neural **Net**work for automatic early detection of dementia based on the CAUEEG dataset.
+`BCI-BrainAI/emmnet`의 **feature/eeg-preprocessing** 브랜치
+커밋 `2550cb46f7a0dbfd2403661217d41fe8520d591e`를 가져와,
+제공된 EMMNet 논문의 EEG 전처리 → 인코더 → 학습 → 평가 → 특징 추출을 연결했습니다.
+기존 로컬 `emmnet_eeg.py`의 인터페이스를 유지하며 빠졌던 원본 백본도 포함했습니다.
+새 실행 진입점은 **run_eeg.py**입니다. 기존 run_train.py, notebook, test_*.py는
+브랜치의 비교용 원본이며 새 경로와 설정을 공유하지 않습니다. 원본 설명은 README.upstream.md에 있습니다.
 
-This repository is the official implementation of "[Deep learning-based EEG analysis to classify mild cognitive impairment for early detection of dementia: algorithms and benchmarks](https://doi.org/10.1016/j.neuroimage.2023.120054)" from the CNIR (CAU NeuroImaging Research) team.
+## 설치 및 검증
 
-![graphical-abstract](figure/graphical-abstract.jpg)
+Python 3.10 이상에서 이 폴더를 터미널로 열고 실행합니다.
 
----
-
-## Model summary
-
-### *CAUEEG-Dementia* dataset
-
-|                   Model                  | #Params | Model size (MiB) | TTA | Throughput (EEG/s) | Test accuracy |                                             Link 1                                             |                Link 2                |
-|:----------------------------------------:|:-------:|:----------------:|:---:|:------------------:|:-------------:|:----------------------------------------------------------------------------------------------:|:------------------------------------:|
-|         k-Nearest Neighbors (k=5)        |    -    |      11848.7     |     |        52.42       |     36.80%    |                                                                                                |                                      |
-|       Random Forests (#trees=2000)       |    -    |      2932.8      |     |       808.76       |     46.62%    |                                                                                                |                                      |
-|                Linear SVM                |   0.1M  |        0.5       |     |      10393.40      |     52.33%    |                                                                                                |                                      |
-| Ieracitano-CNN ([Ieracitano et al., 2019](https://doi.org/10.1016/j.neucom.2018.09.071)) |   3.5M  |       13.2       |     |       8172.36      |     54.27%    |                                                                                                |                                      |
-|            CEEDNet (1D-VGG-19)           |  20.2M  |       77.2       |     |       6593.80      |     64.00%    | [1vc80n1f](https://drive.google.com/file/d/1XRDbyIrjfR0C4eO7KJsJmft6u-lkYHMa/view?usp=sharing) | [1vc80n1f](http://naver.me/FqHmarN3) |
-|            CEEDNet (1D-VGG-19)           |  20.2M  |       77.2       |  ✔  |       931.64       |     67.11%    | [1vc80n1f](https://drive.google.com/file/d/1XRDbyIrjfR0C4eO7KJsJmft6u-lkYHMa/view?usp=sharing) | [1vc80n1f](http://naver.me/FqHmarN3) |
-|          CEEDNet (1D-ResNet-18)          |  11.4M  |       43.6       |  ✔  |       1249.90      |     68.75%    | [2s1700lg](https://drive.google.com/file/d/1LPWNm2lrW7ioQKrxo-egy4SG1bhxuIJk/view?usp=sharing) | [2s1700lg](http://naver.me/5VAZbIKU) |
-|          CEEDNet (1D-ResNet-50)          |  26.2M  |       100.2      |  ✔  |       1013.18      |     67.00%    | [gvqyvmrj](https://drive.google.com/file/d/18CJcjJf8R-8_dCEYlJJlchevnLk65Fbv/view?usp=sharing) | [gvqyvmrj](http://naver.me/GaT7Jv7R) |
-|          CEEDNet (1D-ResNeXt-50)         |  25.7M  |       98.2       |  ✔  |       702.64       |     68.54%    | [v301o425](https://drive.google.com/file/d/151_8TtAgmtsuUCnvs72-J2TEc6_9KNFe/view?usp=sharing) | [v301o425](http://naver.me/xPpjeZms) |
-|            CEEDNet (2D-VGG-19)           |  20.2M  |       77.1       |  ✔  |       296.84       |     70.18%    | [lo88puq7](https://drive.google.com/file/d/1GYN2NrvDpiE9VB4_Lf7JdqinCCVN0jMu/view?usp=sharing) | [lo88puq7](http://naver.me/5T3Rs9BG) |
-|          CEEDNet (2D-ResNet-18)          |  11.4M  |       43.7       |  ✔  |       399.40       |     65.88%    | [xci5svkl](https://drive.google.com/file/d/1SeTCuYihT18lPlKjxW8OYoMGrCAFUmVt/view?usp=sharing) | [xci5svkl](http://naver.me/59NpYBWp) |
-|          CEEDNet (2D-ResNet-50)          |  25.7M  |       98.5       |  ✔  |       182.20       |     67.21%    | [syrx7bmk](https://drive.google.com/file/d/1YKGJsaGzI6wx6xLyU20jgHQ3dE4w9-ih/view?usp=sharing) | [syrx7bmk](http://naver.me/F2YWda3d) |
-|          CEEDNet (2D-ResNeXt-50)         |  25.9M  |       99.1       |  ✔  |       161.25       |     67.91%    | [1sl7ipca](https://drive.google.com/file/d/1d6_5C7ZBXzYCnBoNjJmZeefXENnEcdhI/view?usp=sharing) | [1sl7ipca](http://naver.me/5vYbU1Mp) |
-|            CEEDNet (ViT-B-16)            |  90.1M  |       343.6      |  ✔  |        47.31       |     66.18%    | [gjkysllw](https://drive.google.com/file/d/1ZTdU0mtMjqVvBw3tXpc-_R2GR9PhSNl6/view?usp=sharing) | [gjkysllw](http://naver.me/x6UXopG9) |
-|            CEEDNet (Ensemble)            |  256.7M |       981.1      |  ✔  |        22.74       |     74.66%    |                                                                                                |                                      |
-
-<img src="figure/dementia-roc-curve.jpg" alt="dementia-roc-curve" width="80%"/>
-<img src="figure/dementia-confusion.jpg" alt="dementia-confusion-matrix" width="35%"/>
-<img src="figure/dementia-class-wise-metrics.jpg" alt="dementia-class-wise-metrics" width="55%"/>
-
-### *CAUEEG-Abnormal* dataset
-
-|                   Model                  | #Params | Model size (MiB) | TTA | Throughput (EEG/s) | Test accuracy |                                             Link 1                                             |                Link 2                |
-|:----------------------------------------:|:-------:|:----------------:|:---:|:------------------:|:-------------:|:----------------------------------------------------------------------------------------------:|:------------------------------------:|
-|         K-Nearest Neighbors (K=7)        |    -    |      14015.3     |     |        41.19       |     51.42%    |                                                                                                |                                      |
-|       Random Forests (#trees=2000)       |    -    |      1930.5      |     |       830.80       |     72.63%    |                                                                                                |                                      |
-|                Linear SVM                |   0.1M  |        0.3       |     |      10363.76      |     68.00%    |                                                                                                |                                      |
-| Ieracitano-CNN ([Ieracitano et al., 2019](https://doi.org/10.1016/j.neucom.2018.09.071)) |   3.5M  |       13.2       |     |       8293.08      |     65.98%    |                                                                                                |                                      |
-|            CEEDNet (1D-VGG-19)           |  20.2M  |       77.2       |     |       7660.22      |     72.45%    | [nemy8ikm](https://drive.google.com/file/d/1NpDsxmFMln71d9JEpnGfCxhaRtyWK4su/view?usp=sharing) | [nemy8ikm](http://naver.me/x1gdjONm) |
-|            CEEDNet (1D-VGG-19)           |  20.2M  |       77.2       |  ✔  |       998.54       |     74.28%    | [nemy8ikm](https://drive.google.com/file/d/1NpDsxmFMln71d9JEpnGfCxhaRtyWK4su/view?usp=sharing) | [nemy8ikm](http://naver.me/x1gdjONm) |
-|          CEEDNet (1D-ResNet-18)          |  11.4M  |       43.5       |  ✔  |       844.65       |     74.85%    | [4439k9pg](https://drive.google.com/file/d/1LH069g2oyO2XvEDzFpJPR9X5xuLmcnq3/view?usp=sharing) | [4439k9pg](http://naver.me/5vYbUTay) |
-|          CEEDNet (1D-ResNet-50)          |  26.3M  |       100.7      |  ✔  |       837.66       |     76.37%    | [q1hhkmik](https://drive.google.com/file/d/1U9G0nJ-dYe6RBFxuCsdCkh-LU5AxwqFS/view?usp=sharing) | [q1hhkmik](http://naver.me/xEqsymHV) |
-|          CEEDNet (1D-ResNeXt-50)         |  25.7M  |       98.2       |  ✔  |       800.49       |     77.32%    | [tp7qn5hd](https://drive.google.com/file/d/1OR5Z4U-QWDZBlm8A8pnRB2LMU0wTOMVa/view?usp=sharing) | [tp7qn5hd](http://naver.me/GItl9VHH) |
-|            CEEDNet (2D-VGG-19)           |  20.2M  |       77.2       |  ✔  |       447.81       |     75.39%    | [ruqd8r7g](https://drive.google.com/file/d/1UUADOHCoBc4wt9LmIn-GitbPzNRbmCTn/view?usp=sharing) | [ruqd8r7g](http://naver.me/GkJzA84q) |
-|          CEEDNet (2D-ResNet-18)          |  11.5M  |       43.8       |  ✔  |       410.44       |     75.19%    | [dn10a6bv](https://drive.google.com/file/d/12bsVV0dcVbbjO4eB3vN7ykeFAf6vp-7P/view?usp=sharing) | [dn10a6bv](http://naver.me/51nm4WtS) |
-|          CEEDNet (2D-ResNet-50)          |  25.7M  |       98.5       |  ✔  |       187.30       |     74.96%    | [atbhqdgg](https://drive.google.com/file/d/1ZWnK04-o5V1eIDtlE_5Ct83oxaMfHkzX/view?usp=sharing) | [atbhqdgg](http://naver.me/5Lo4eJAa) |
-|          CEEDNet (2D-ResNeXt-50)         |  25.9M  |       99.1       |  ✔  |       201.01       |     75.85%    | [0svudowu](https://drive.google.com/file/d/1A8npNb_3ixmS6ui6yTonh95oQXwPjHWp/view?usp=sharing) | [0svudowu](http://naver.me/FEdfcVaz) |
-|            CEEDNet (ViT-B-16)            |  86.9M  |       331.6      |  ✔  |        63.99       |     72.70%    | [1cdws3t5](https://drive.google.com/file/d/1OT-xOTJ2kSqYWOG0KWQ6PeSPYWdX52Lo/view?usp=sharing) | [1cdws3t5](http://naver.me/xkqoPaor) |
-|            CEEDNet (Ensemble)            |  253.8M |       969.9      |  ✔  |        26.40       |     79.16%    |                                                                                                |                                      |
-
-<img src="figure/abnormal-roc-curve.jpg" alt="abnormal-roc-curve" width="80%"/>
-<img src="figure/abnormal-confusion.jpg" alt="abnormal-confusion-matrix" width="25%"/>
-<img src="figure/abnormal-class-wise-metrics.jpg" alt="abnormal-class-wise-metrics" width="55%"/>
-
----
-
-## Getting started
-
-### Requirements
-
-- Installation of Conda (refer to <https://www.anaconda.com/products/distribution>)
-- Nvidia GPU with CUDA support
-
-> Note: we tested the code in the following environments.
->
-> |    **OS**    | **Python** | **PyTorch** | **CUDA** |
-> |:------------:|:----------:|:-----------:|:--------:|
-> |  Windows 10  |   3.9.12   |    1.11.0   |   11.3   |
-> | Ubuntu 18.04 |   3.8.11   |    1.10.0   |   11.3   |
-> | Ubuntu 20.04 |   3.9.12   |    1.11.0   |   11.3   |
-
-### Installation
-
-(optional) Create and activate a Conda environment.
-
-```bash
-conda create -n caueeg python=3.9
-conda activate caueeg
+```powershell
+python -m pip install -r requirements-eeg.txt
+python -m pytest
 ```
 
-Install PyTorch library (refer to <https://pytorch.org/get-started/locally/>).
+CPU에서도 실행할 수 있습니다. GPU 학습에는 해당 GPU와 호환되는 PyTorch를 설치하세요.
+실제 데이터는 이 배포물에 포함하지 않았습니다. 검증 결과는 VALIDATION.md를 확인하세요.
 
-```bash
-conda install pytorch torchvision cudatoolkit=11.3 -c pytorch
-```
+## 입력 데이터
 
-Install other necessary libraries.
+CAUEEG 형식 JSON의 `train_split`, `validation_split`, `test_split`을 사용합니다.
+각 항목은 `serial`, `class_label`, `age`가 필요합니다. 나이가 split JSON에 없으면
+`--annotation annotation.json`으로 `data` 안의 `serial`, `age`를 연결합니다.
+나이를 임의로 0으로 채우지 않습니다. 환자 중복이나 split 간 겹침, 누락된 파일,
+잘못된 라벨, 누락된 채널은 오류로 보고합니다. 여러 recording을 가진 동일 환자는
+사전에 환자 단위로 정리해야 합니다. `serial`은 환자를 식별하는 키여야 합니다.
 
-```bash
-pip install -r requirements.txt
-```
-
-### Preparation of the [CAUEEG](https://github.com/ipis-mjkim/caueeg-dataset) dataset
-
-> ❗ Note: The use of the CAUEEG dataset is allowed for only academic and research purposes 👩‍🎓👨🏼‍🎓.
-
-- For full access of the CAUEEG dataset, follow the instructions specified in <https://github.com/ipis-mjkim/caueeg-dataset>.
-- Download, unzip, and move the whole dataset files into [local/datasets/](local/datasets/).
-
-> 💡 Note: We provide `caueeg-dataset-test-only` at [[link 1]](https://drive.google.com/file/d/1P3CbLY7h9O1CoWEWsIZFbUKoGSRUkTA1/view?usp=sharing) or [[link 2]](http://naver.me/xzLCBwFp) to test our research. `caueeg-dataset-test-only` has the 'real' test splits of two benchmarks (*CAUEEG-Dementia* and *CAUEEG-Abnormal*) but includes the 'fake' train and validation splits.
-
----
-
-## Usage
-
-### Train
-
-Train a CEEDNet model on the training set of *CAUEEG-Dementia* from scratch using the following command:
-
-```bash
-python run_train.py data=caueeg-dementia model=1D-ResNet-18 train=base_train
-```
-
-Similarly, train a model on the training set of *CAUEEG-Abnormal* from scratch using:
-
-```bash
-python run_train.py data=caueeg-abnormal model=1D-ResNet-18 train=base_train
-```
-
-Or, you can use [this Jupyter notebook](notebook/02_Train.ipynb).
-
-If you encounter a GPU memory allocation error or wish to adjust the balance between memory usage and training speed, you can specify the minibatch size by adding the `++model.minibatch=INTEGER_NUMBER` option to the command as shown below:
-
-```bash
-python run_train.py data=caueeg-dementia model=1D-ResNet-18 train=base_train ++model.minibatch=32
-```
-
-```bash
-python run_train.py data=caueeg-abnormal model=1D-ResNet-18 train=base_train ++model.minibatch=32
-```
-
-Thanks to [Hydra](https://hydra.cc/) support, the model, hyperparameters, and other training details are easily tuned using or modifying config files.
-
-```bash
-python run_train.py data=caueeg-dementia model=2D-VGG-19 train=base_train
-```
-
-For speed-up, we recommend using the `PyArrow.feather` file format than using directly `EDF`, which can be done:
-
-```bash
-python ./datasets/convert_file_format.py  # it takes a few minutes
-python run_train.py data=caueeg-dementia model=2D-VGG-19 train=base_train ++data.file_format=feather
-```
-
-### Evaluation
-
-Evaluation can be conducted using [this Jupyter notebook](notebook/03_Evaluate.ipynb) (or [another notebook](notebook/03_Evaluate_Test_Only.ipynb) for `caueeg-dataset-test-only` case)
-
-To use the pre-trained model, download the checkpoint file from [here](#model-summary), and move it to [local/checkpoint](local/checkpoint/) directory (e.g., `local/checkpoint/1vc80n1f/checkpoint.pt` for the 1D-VGG-19 model on the *CAUEEG-Dementia* benchmark).
-
----
-
-## Citation
-
-If you found this repository helpful, please cite the paper below.
-
-```bib
-@article{kim2023deep,
-  title={Deep learning-based EEG analysis to classify normal, mild cognitive impairment, and dementia: algorithms and dataset},
-  author={Kim, Min-jae and Youn, Young Chul and Paik, Joonki},
-  journal={NeuroImage},
-  pages={120054},
-  year={2023},
-  publisher={Elsevier}
+```json
+{
+  "train_split": [
+    {"serial": "00001", "class_label": 0, "age": 55},
+    {"serial": "00002", "class_label": 1, "age": 75}
+  ],
+  "validation_split": [{"serial": "00003", "class_label": 0, "age": 60}],
+  "test_split": [{"serial": "00004", "class_label": 1, "age": 80}]
 }
-
 ```
+
+기본 EDF 경로는 `--eeg-dir` 아래 `00001.edf`입니다. `eeg_file` 필드로 파일명을
+명시할 수 있습니다. NPZ도 지원하며 `signal` [채널, 시간] **volt 단위**,
+`sfreq` 원본 샘플링 주파수, `channel_names` 문자열 배열을 저장해야 합니다.
+EDF는 MNE가 volt로 읽습니다. 원본 샘플링 주파수는 140 Hz 초과여야 합니다.
+10초 미만 기록은 거부하며 자동 zero padding으로 실제 기록처럼 학습시키지 않습니다.
+
+기본 EEG 채널 순서는 논문에 적힌 다음 19개입니다.
+`Fp1 F3 C3 P3 O1 Fp2 F4 C4 P4 O2 F7 T3 T5 F8 T4 T6 Fz Cz Pz`
+T7/P7/T8/P8 별칭을 T3/T5/T4/T6으로 처리합니다. `EEG Fp1-REF` 등의 이름도
+지원합니다. 입력은 이미 linked-ear reference로 기록된 신호를 가정합니다.
+다른 reference를 자동으로 재구성하지 않습니다. 추가 ECG 입력은 `--include-ecg`로
+선택하고 광자극 채널은 제외합니다. 이 선택은 학습 checkpoint에 저장됩니다.
+
+## 학습
+
+이진 abnormal 작업은 원본 abnormal.json의 라벨 의미를 확인하고 사용하세요.
+논문의 sensitivity 비교에서는 abnormal이 라벨 1이어야 합니다.
+Normal/MCI/Dementia 3분류 데이터는 `--num-classes 3`을 지정합니다.
+라벨을 자동으로 이진/3분류로 바꾸지 않습니다.
+
+```powershell
+python run_eeg.py train --split-json "D:/CAUEEG/abnormal.json" --annotation "D:/CAUEEG/annotation.json" --eeg-dir "D:/CAUEEG/signal/edf" --output "local/eeg-run" --epochs 100 --batch-size 16
+```
+
+학습 환자 전체 신호에서 채널별 평균/표준편차, 학습 환자의 나이 평균/표준편차를
+계산합니다. 검증·테스트는 해당 통계를 재사용합니다. 전처리는 전체 기록을 필터링하고
+리샘플링한 다음 학습에서는 매번 무작위 2000점 크롭을 뽑습니다. 마지막 가능한 크롭과
+정확히 2000점인 입력도 지원합니다. 정규화 뒤 학습 신호에만 Gaussian noise를 추가합니다.
+ICA, blink 제거 등의 명시적 artifact 제거는 하지 않습니다.
+
+AdamW, beta=(0.9,0.999), focal loss alpha=.25/gamma=2, warmup + cosine decay,
+기본 batch=16을 사용합니다. FC BatchNorm을 위해 학습의 마지막 미완성 배치는 버립니다.
+학습 환자 수가 batch보다 적으면 batch 크기를 2 이상으로 줄이세요.
+검증 정확도로 선택한 `best.pt`에 모델, 통계, 옵션, 환자 분할을 저장합니다.
+`history.json`과 최선 checkpoint의 `test_metrics.json`도 생성합니다.
+이 실행 경로는 단일 GPU/CPU용이며 학습 재개와 DDP는 지원하지 않습니다.
+통계 계산과 EDF 전처리는 매번 기록을 읽으므로 대규모 데이터에서는 느릴 수 있습니다.
+
+## 평가 및 MRI 결합용 특징 추출
+
+```powershell
+python run_eeg.py evaluate --split-json "D:/CAUEEG/abnormal.json" --annotation "D:/CAUEEG/annotation.json" --eeg-dir "D:/CAUEEG/signal/edf" --checkpoint "local/eeg-run/best.pt" --output "local/eeg-eval"
+python run_eeg.py features --split-json "D:/CAUEEG/abnormal.json" --annotation "D:/CAUEEG/annotation.json" --eeg-dir "D:/CAUEEG/signal/edf" --checkpoint "local/eeg-run/best.pt" --output "local/eeg-features" --split test
+```
+
+검증·테스트는 균등 위치 8개 크롭의 softmax 확률 평균으로 환자별 예측을 만듭니다.
+평가 결과에는 confusion matrix, 클래스별 sensitivity, 환자별 확률이 저장됩니다.
+특징 파일은 `test_features.npz`이며 `features` [N,256], `subject_ids`, `labels`를 포함합니다.
+특징은 8개 크롭의 특징 평균입니다. MRI 특징은 반드시 같은 환자 ID로 정렬해서 결합하세요.
+EMMNetFeatureFusion은 EEG/MRI 각각 256차원의 concat과 1개/2개 FC를 지원합니다.
+MRI 인코더 자체는 이번 EEG 작업에 포함되지 않습니다. 특징을 미리 추출해서 학습하는 것은
+end-to-end fusion과 다릅니다. 공동 학습에서는 EEGEncoder를 MRI 인코더와 함께 호출하세요.
+
+## 논문에 명시된 사항과 구현 선택
+
+| 항목 | 적용 내용 | 근거/한계 |
+|---|---|---|
+| 필터/샘플링 | 0.5–70 Hz / 200 Hz | 논문 3.1절. 4차 Butterworth zero-phase 및 polyphase resample은 구현 선택 |
+| crop/artifact | 학습 random crop / 명시적 artifact 제거 없음 | 논문 3.1절 |
+| 시간 길이 | 10초, 2000점 | 표 2 집계 및 브랜치 기본 설정. 정확한 최종 T는 본문 미명시 |
+| 백본 | 원본 ResNet1D BasicBlock [2,2,2,2] | 논문 4.2절의 CEEDNet ResNet-18 |
+| 나이/출력 | age conv 채널 / 256차원 | 논문 3.2, 4.2절 |
+| 채널 | 기본 EEG 19개, ECG 선택 | 논문은 기록 채널 21개를 명시하나 실제 모델 채널 선택은 불명확 |
+| 활성화/FC | Mish / fc_stages=3 | CEEDNet 브랜치 기본 설정 유지; EMMNet 세부값 미명시 |
+| augmentation | 정규화 신호에 Gaussian std=.001 | 그림 1 random noise 및 브랜치 awgn 설정. 나이 noise/multiplicative noise는 미사용 |
+| 학습 | AdamW / focal .25,2 / batch16 | 논문 4.2절 |
+| epoch/LR/warmup | 100 / 1e-4 / 5%, weight decay=.01 | 실행 가능한 기본값이며 논문의 확정 세부값이 아님 |
+| focal alpha | 모든 클래스에 scalar .25 | 논문은 alpha_t의 정확한 클래스별 매핑 미명시; eeg_loss.py는 벡터도 지원 |
+| 평가 | deterministic 8-crop | 브랜치의 8-crop 기본에 기반한 구현 선택; 논문의 100회 반복 평가와 다름 |
+
+논문 표 4의 EEG-only 파라미터 25.7M과 현재 CEEDNet 기본 백본 파라미터 수는 다릅니다.
+현재 기본 19채널 이진 분류기는 11,421,954개 파라미터입니다.
+숫자를 맞추기 위해 근거 없이 네트워크를 키우지 않았습니다. 저자의 최종 상세 설정과
+CAUEMM 데이터/가중치가 없어 **정확한 모델·성능 재현을 주장하지 않습니다**.
+VALIDATION.md의 결과는 코드 동작 검증이며 진단 정확도 평가가 아닙니다.
+
+## 출처
+
+- 요청 브랜치: https://github.com/BCI-BrainAI/emmnet/tree/feature/eeg-preprocessing
+- 가져온 커밋: https://github.com/BCI-BrainAI/emmnet/commit/2550cb46f7a0dbfd2403661217d41fe8520d591e
+- 논문: 사용자 제공 emmnet.pdf, 3.1/3.2/4.2절, 그림 1, 표 2/4.
+- 백본 원본: 브랜치 models/resnet_1d.py, activation.py, utils.py를 바이트 그대로
+  ceednet_original/에 보관했습니다. SOURCE.json에 SHA-256을 기록합니다.
+- 원본 파일의 출처 주석을 보존했습니다. 원격 GitHub 저장소에는 변경을 push하지 않았습니다.
