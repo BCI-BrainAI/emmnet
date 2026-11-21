@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "emmnet"
+version = "0.1.0"
+description = "EMMNet MRI encoder (Med3D 3D ResNet-18) 학습/평가"
+requires-python = ">=3.10"
+# torch는 서버 환경(CUDA/Python)에 맞는 휠을 별도로 먼저 설치한다.
+dependencies = ["torch>=2.1", "numpy>=1.24", "pyyaml>=6.0", "nibabel>=5.1", "matplotlib>=3.7"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

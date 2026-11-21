@@ -1,0 +1,145 @@
+# MRI 단독 학습 서버 실행 절차 (integration/mri-train)
+
+main에는 반영하지 않는다. 이 브랜치에서만 작업한다. 모든 명령은 repo 루트에서 실행한다.
+직접 코드를 타이핑하는 단계는 없다(스크립트/`--set`으로 대체).
+
+## 빠른 시작: 자동화 CLI (`scripts/emmnet.py`)
+데이터 경로/GPU/출력 폴더는 자동 감지한다(`info`로 확인). 후보가 여러 개이거나 강제로 지정할 때만 `init`(`.emmnet.json`, git 미추적)을 쓴다. 모든 명령에 `--dry-run`을 붙이면 실행 없이 명령만 출력한다.
+```bash
+git checkout integration/mri-train && git pull         # (configs 로컬 수정이 있으면 git stash)
+python scripts/emmnet.py info                           # 자동 감지 결과(데이터/GPU/출력 폴더/디스크/가중치)
+# (선택) 자동 감지를 덮어쓸 때만: python scripts/emmnet.py init --data <전처리 out_dir> --gpus 0 1
+python scripts/emmnet.py setup --install-torch          # torch(cu126)/CUDA 확인, pip install -e, pytest, 가중치 해시
+python scripts/emmnet.py check                          # 데이터 점검 + 정규화 통계 캐시 + split_counts
+python scripts/emmnet.py baseline base                  # 기존 base run: train/val 평가 + 분석 (test는 --test, 1회)
+python scripts/emmnet.py overfit                        # overfit 점검(train_auc ~1.0 이어야 정상)
+python scripts/emmnet.py train base2                    # 본 학습(백그라운드). --gpu N, --set train.lr=3e-4 ...
+python scripts/emmnet.py status                         # 전체 run 요약(state/best val AUC/train AUC/test AUC)
+python scripts/emmnet.py log base2                      # 학습 로그 tail
+python scripts/emmnet.py sweep                          # lr {1e-3,3e-4,1e-4,3e-5}를 GPU에 자동 분배(이미 있는 run은 건너뜀)
+python scripts/emmnet.py final --lr <선택값>             # 시드 0 1 2 최종 학습(GPU 분배)
+python scripts/emmnet.py test final_s0 final_s1 final_s2   # run별 test 1회 + 평균±표준편차
+```
+### 끊김/중단 시 동작
+- SSH·터미널 끊김: 학습은 새 세션(`setsid nohup`/`start_new_session`)이라 계속 진행된다.
+- 서버 재부팅·프로세스 kill·OOM·logind `KillUserProcesses`: 프로세스는 죽는다. 매 epoch 끝에 `resume.pth`(모델/옵티마이저/history/best)를 원자적으로 저장하므로, 같은 명령(`train <name>`/`sweep`/`final`)을 다시 실행하면 중단된 run만 이어서 학습한다(완료된 run은 건너뜀, 진행 중인 run은 중복 실행하지 않음).
+- 재개 단위는 epoch(진행 중이던 epoch은 처음부터). 시드는 epoch별로 재설정되어 데이터 순서는 재현되나, 비결정적 CUDA 연산 때문에 비중단 run과 비트 단위로 같지는 않다.
+- 설치만 직접 하려면 아래 0절을 따른다. 이하 절은 CLI가 내부에서 호출하는 개별 명령의 상세 설명이다.
+
+## 0. 환경
+```bash
+git fetch origin && git checkout integration/mri-train
+# 서버 로컬 YAML 수정이 남아 있으면: git stash (micro_batch_size=4는 이제 커밋된 YAML 기본값)
+python -m venv .venv && source .venv/bin/activate        # 서버 Python 3.14면 3.11/3.12 환경 권장
+pip install torch --index-url https://download.pytorch.org/whl/cu126   # 드라이버 CUDA 12.4 -> cu126 휠 (실제 설치 방법은 아래 기록란에 남길 것)
+pip install -e ".[dev]"                # pyproject.toml 기준(matplotlib 포함)
+pytest -q                               # 로컬 기준 28개 통과 확인
+export EMMNET_DATA=<전처리 out_dir>      # 이후 모든 스크립트가 데이터 경로로 사용(--processed-dir 생략 가능)
+```
+설치 기록(서버에서 실제로 쓴 torch 설치 명령/버전): `__________`
+
+## 1. 사전학습 가중치 (확정: resnet_18.pth)
+가중치는 git에 없다(용량). 맥북에서 서버로 직접 복사한다(`resnet_18.pth`만 필요, 약 132MB):
+```bash
+scp pretrained/resnet_18.pth <서버>:/mnt/disk2/projects/emmnet/pretrained/     # 맥북에서 실행
+```
+서버에서 확인:
+```bash
+sha256sum pretrained/resnet_18.pth   # 로컬 값: 38b3a174...f61da3
+```
+`model.pretrained_path`는 `resnet_18.pth`로 고정. (`resnet_18_23dataset.pth`는 해시가 달라 사용하지 않음.)
+학습 스크립트는 backbone `missing/unexpected` 키가 하나라도 있으면 중단한다.
+
+## 2. 데이터 전처리 (ADNI)
+`configs/mri_dataset.yaml`의 `raw_dir`, `metadata_dir`, `out_dir`를 서버 경로로 확인.
+```bash
+python scripts/preprocess_mri.py --config configs/mri_dataset.yaml --dry-run
+python scripts/preprocess_mri.py --config configs/mri_dataset.yaml            # out_dir는 새 폴더 (이미 파일이 있으면 중단됨; run.json으로 확인)
+```
+산출: `manifest.csv`, `selection.csv`, `excluded.csv`, `run.json`, `volumes/*.npy`, `provenance/*.json`
+
+## 3. 산출물 점검 (학습 전 필수)
+```bash
+python scripts/check_mri_dataset.py --processed-dir $EMMNET_DATA --n-preview 8
+python scripts/cache_norm_stats.py  --processed-dir $EMMNET_DATA     # 정규화 통계 캐시 + 전경비율(fg_frac) 경고. 학습 속도 개선(결과 동일)
+```
+확인:
+- split별 CN/(MCI+AD) 모두 존재, subject 중복 0
+- `excluded.csv` 사유 분포(`multiple_screening_scaled_candidates` 비율 = 표본 손실/선택 편향)
+- `qc_preview.png` 육안 확인 후 qc_status 갱신
+- `cache_norm_stats.py`의 fg_frac 경고(>0.9): 전경 마스크 `volume>0`이 깨졌다는 신호 -> z-score 통계 오염
+
+## 4. GPU 메모리 사전 측정
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/profile_memory.py --sizes 1 2 4 8
+```
+권장 `micro_batch_size`를 `--set train.micro_batch_size=<값>`으로 적용. 측정 기록(256^3, bf16): bs 1/2/4/8 = 1.8/3.6/6.6/12.8 GiB (bs8은 OOM 직전이라 미사용).
+
+## 5. 학습 / 평가
+### 5-0. 점검 학습 (본 학습 전)
+```bash
+# subset 스모크
+python scripts/make_subset.py --processed-dir $EMMNET_DATA --out-dir <subset_dir> --per-split 18 4 4
+# overfit 확인: train_auc -> ~1.0 이 되어야 파이프라인/라벨/정규화가 정상
+bash scripts/run_experiment.sh overfit --gpu 0 -- --set data.overfit_n=16 train.lr=1e-3 train.epochs=40 train.early_stopping_patience=999
+python scripts/analyze_results.py --run-dir checkpoints/overfit
+```
+
+### 5-1. 본 학습 (단일 GPU)
+```bash
+bash scripts/run_experiment.sh base --gpu 0 --bg                  # 백그라운드(nohup), 로그: checkpoints/base/train.log
+bash scripts/run_experiment.sh lr3e-4 --gpu 0 --bg -- --set train.lr=3e-4 train.seed=1
+```
+- 자동 저장: `config.yaml`(해석된 설정), `meta.json`(git sha/dirty/환경/label_verified), `history.json`(매 epoch),
+  `best.pth`(val AUC 최대, val 기반 Youden threshold 포함), `last.pth`, `train_metrics.json`/`val_metrics.json`, `predictions_{train,val}.csv`
+- test는 자동 실행하지 않는다. 같은 이름의 run 폴더가 있으면 거부(덮어쓰기 방지). 폴더 위치는 `CKPT_ROOT`로 변경 가능.
+- `--set`은 YAML에 있는 키만 허용(오타 방지). 예: `--set train.lr=3e-4 train.weight_decay=0.05`
+
+### 5-2. 여러 GPU 활용
+DDP는 지원하지 않는다. GPU별로 실험(lr/seed)을 나눠 병렬 실행한다:
+```bash
+bash scripts/run_experiment.sh lr3e-4 --gpu 0 --bg -- --set train.lr=3e-4
+bash scripts/run_experiment.sh lr1e-4 --gpu 1 --bg -- --set train.lr=1e-4
+```
+
+### 5-3. 분석 (test 전)
+```bash
+python scripts/analyze_results.py --run-dir checkpoints/base
+```
+출력: `analysis.json`, `curves.png`, 콘솔 요약
+- history 진단(best==last, 미학습, 과적합, val 변동 큼), NaN 검사
+- split별 AUC + 부트스트랩 95% CI, sens/spec(체크포인트 임계값), 클래스별 확률 분위수
+- MCI/AD 등 research_group별 mean prob / positive rate, age-only AUC, Spearman(prob, age)
+- 주의: `train_auc`는 학습 중 BN train-mode 확률로 계산한 값(추가 forward 없음). eval-mode train AUC는 `predictions_train.csv` 기준(`analysis.json`의 train).
+  val 지표 + val 기반 임계값 조합은 낙관적이다.
+
+### 5-4. test 평가 (run당 1회)
+```bash
+python scripts/evaluate_mri_encoder.py --checkpoint checkpoints/base/best.pth --splits test
+python scripts/analyze_results.py --run-dir checkpoints/base        # test CI 포함 재생성
+```
+- 평가는 체크포인트에 저장된 **학습 당시 config**(정규화/모델 크기)를 사용한다. YAML을 나중에 바꿔도 영향 없음.
+- `.test_used.json` 잠금: 같은 run에서 test 재실행은 거부. 의도한 재평가만 `--force`(기록은 남음).
+- `last.pth`(threshold 없음)는 평가 거부.
+
+## 6. 하이퍼파라미터 출처
+| 항목 | 값 | 출처 |
+|---|---|---|
+| optimizer / betas | AdamW / (0.9, 0.999) | EMMNet Sec 4.2, p.286 |
+| batch size | 16 (effective) | EMMNet Sec 4.2, p.286 |
+| LR schedule | warmup + cosine decay | EMMNet Sec 4.2, p.286 (warmup 길이 미기재) |
+| focal loss | alpha 0.25, gamma 2 | EMMNet Sec 4.2, p.286 |
+| feature dim | 256 | EMMNet Sec 4.2, p.286 |
+| lr, weight decay, epochs, warmup 길이, head lr 배수, grad clip | 1e-4, 1e-2, 50, 2, x10, 1.0 | **논문에 없음 (팀 기본값)** |
+
+참고: Med3D Sec 4.2 (p.8) fine-tuning Adam lr 0.001(별개 과제). Med3D 사전학습은 SGD lr 0.1, momentum 0.9, wd 0.001 (Sec 4.1, p.6).
+lr sweep {1e-3, 3e-4, 1e-4, 3e-5}는 val AUC로만 선택(test는 최종 1회):
+```bash
+for lr in 1e-3 3e-4 1e-4 3e-5; do bash scripts/run_experiment.sh lr$lr --gpu 0 -- --set train.lr=$lr; done
+```
+복수 시드: `-- --set train.seed=1` (평균±표준편차 보고).
+
+## 7. 라벨 / 미해결
+- 라벨 확정: CN=0, MCI=1, AD=1. 진단 변경자 제외 여부, Screening 진단과 researchGroup 일치는 미검증(`label_verified=False`; `meta.json`과 학습/분석 로그에 경고).
+- 모델 선택(val AUC)과 임계값(Youden)이 같은 val에서 정해지므로 val이 작으면 노이즈에 민감 -> `split_counts`와 CI를 함께 볼 것.
+- 최종 보고는 단일 시드가 아닌 복수 시드 평균/표준편차 권장.
