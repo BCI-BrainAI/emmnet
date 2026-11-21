@@ -1,94 +1,166 @@
-# EMMNet 재현 — MRI Encoder (뇌질환팀 캡스톤)
+# EMMNet 재현 — Multimodal Fusion (뇌질환팀 캡스톤)
 
-EEG-MRI Multimodal neural network (EMMNet, Lee et al., ICPR 2026)의 **MRI 파트** 재현.
-담당 범위: 3D ResNet-18(Med3D 사전학습) MRI Encoder를 완성하고 **MRI 단독 성능**을 측정한다(fusion 이전 단계).
-데이터: ADNI Screening/Scaled T1 (CN=0, MCI·AD=1). 작업 브랜치: `integration/mri-train` (main에는 직접 반영하지 않음).
+EEG-MRI Multimodal neural network (EMMNet, Lee et al., ICPR 2026)의 **멀티모달 융합(EEG + MRI) 파트** 재현.
+담당 범위: 사전 학습·검증된 **1D ResNet-18 EEG Encoder**와 **3D ResNet-18(Med3D) MRI Encoder**에서 256차원 잠재 특징(Latent Feature)을 추출하고, 경량 어댑터(Multimodal Adapter) 기반의 **Mid-level Concatenation (Decoupled Late Fusion)**으로 정상·비정상을 분류한다.
 
-## 현재 상태 (2026-10-06)
+- 데이터:
+  - EEG: CAUEEG (`abnormal.json`, Normal=0, Abnormal=1)
+  - MRI: ADNI Screening/Scaled T1 (CN=0, MCI·AD=1)
+- 작업 브랜치: `feature/multimodal-adapter` (`main`에는 직접 반영하지 않음)
 
-- 구현 완료: MRI Encoder, 데이터셋/전처리, 학습·평가·분석 파이프라인, CAM 계산 함수. pytest 28개 통과(CPU, 합성 데이터).
-- 베이스라인 학습(단일 GPU) 종료, 결과 분석 전. 실데이터·GPU 검증은 서버에서 진행.
-- 미구현(스텁, `NotImplementedError`): `models/eeg_encoder.py`, `models/fusion.py`, `data/eeg_dataset.py` — EEG 담당자 배정 후 작성.
-- 원 저자 저장소(`github.com/BCI-BrainAI/emmnet`)는 인증 문제로 접근 불가 — 논문(`emmnet.pdf`)과 Med3D 논문 기반 자체 재현.
-- 라벨은 `researchGroup`을 그대로 쓰며 **진단 시점 검증 전**(`label_verified=False`; 학습 로그/`meta.json`에 경고).
+---
+
+## 현재 상태 (2026-11-06)
+
+- **MRI 파트**: 3D ResNet-18 Encoder, 전처리, 학습·평가 파이프라인 및 256차원 특징 추출(`mri_features_{split}.npz`) 완료.
+- **EEG 파트**: 1D ResNet-18(Age-conditioned) Encoder 구현 및 CAUEEG 전체 코호트(1,379건) 대상 256차원 특징 추출(`eeg_features_{split}.npz`) 완료.
+- **멀티모달 융합 파트**:
+  - `src/models/eeg_encoder.py` 및 `src/models/fusion.py` 통합 완료(더미 텐서 Forward Pass 검증 통과).
+  - Unpaired 코호트(CAUEEG + ADNI) 환경에서 Class-Conditional Pairing 기반 경량 어댑터 학습 파이프라인(`train_adapter.py`, `train_adapter_v2.py`) 구현 및 평가 완료.
+  - v2 모델(Residual Adapter + $L_2$ 정규화 + MRI Oversampling + 가중치 손실) 기준 Test Sensitivity **79.55%**, F1-Score **76.92%** 달성.
+
+---
+
+## 시스템 구조 (Decoupled Late Fusion)
+
+CAUEEG(EEG)와 ADNI(MRI)가 서로 다른 피험자 코호트로 구성된 Unpaired 환경에서 End-to-End 학습 시 발생하는 과적합 및 기울기 불안정을 방지하기 위해, **각 단일 모달리티 인코더의 가중치를 고정(Freeze)**한 뒤 후반부 경량 어댑터만 학습하는 구조를 채택한다.
+
+```text
+[EEG Pipeline] ──► 1D-ResNet-18 (Age-conditioned, Frozen) ──► 256-D Feature (L2 Norm) ┐
+                                                                                      ├─► 512-D Concat ──► Residual Adapter ──► 정상/비정상 분류
+[MRI Pipeline] ──► 3D-ResNet-18 (Med3D Backbone, Frozen)  ──► 256-D Feature (L2 Norm) ┘                    (Linear-BN-Skip)
+```
+
+---
 
 ## 설치
 
 ```bash
-# torch는 서버 CUDA/Python에 맞는 휠을 먼저 설치 (서버 드라이버 CUDA 12.4: cu126 휠 또는 Python 3.11/3.12)
+# torch는 실행 환경(CUDA 또는 Mac MPS/CPU)에 맞는 휠을 먼저 설치
 pip install -e ".[dev]"
 pytest -q
 ```
-설치 없이 테스트만 돌리면 `conftest.py`가 `src/`를 path에 추가한다. `models`/`data`/`training`/`evaluation`/`utils`는 top-level 패키지라 전용 가상환경을 권장.
 
-## 사용 (전체 절차는 `docs/SERVER_RUNBOOK.md`)
+- 로컬 환경에서 추출된 `.npz` 특징 벡터만으로 멀티모달 어댑터를 학습할 경우 `torch`, `numpy`, `scikit-learn`만 있으면 실행 가능하다.
+- `models`/`data`/`training`/`evaluation`/`utils`는 top-level 패키지이므로 전용 가상환경 사용을 권장한다.
+
+---
+
+## 사용 방법
+
+### 1. 특징 벡터 파일 준비 (`data/`)
+
+EEG와 MRI 인코더에서 각각 추출한 256차원 특징 파일을 동일한 명명 규칙과 키 구조(`features`, `labels`, `subject_ids`)로 `data/` 폴더에 배치한다.
+
+- EEG: `data/eeg_features_{train,val,test}.npz`
+  - Train `(1107, 256)` / Val `(136, 256)` / Test `(136, 256)`
+- MRI: `data/mri_features_{train,val,test}.npz`
+  - Train `(509, 256)` / Val `(63~64, 256)` / Test `(63~64, 256)`
+
+#### (참고) 서버에서 EEG 특징 벡터 추출 명령어
+```bash
+# 1) EEG 단일 인코더 학습 (best.pt 생성)
+CUDA_VISIBLE_DEVICES=0 python -u run_eeg.py train \
+  --split-json /path/to/caueeg-dataset/abnormal.json \
+  --annotation /path/to/caueeg-dataset/annotation.json \
+  --eeg-dir /path/to/caueeg-dataset/signal/edf \
+  --output local/eeg-run \
+  --epochs 5 --batch-size 16 --eval-crops 2 --device cuda
+
+# 2) 분할별 256차원 특징 추출 (--split: train / val / test)
+CUDA_VISIBLE_DEVICES=0 python run_eeg.py features \
+  --split-json /path/to/caueeg-dataset/abnormal.json \
+  --annotation /path/to/caueeg-dataset/annotation.json \
+  --eeg-dir /path/to/caueeg-dataset/signal/edf \
+  --checkpoint local/eeg-run/best.pt \
+  --output local/eeg-run \
+  --split test --device cuda
+```
+
+#### (참고) MRI 단독 파이프라인 실행 (`docs/SERVER_RUNBOOK.md` 참조)
+```bash
+python scripts/emmnet.py info
+python scripts/emmnet.py train base2
+python scripts/emmnet.py status
+```
+
+### 2. 멀티모달 어댑터 학습 및 평가
 
 ```bash
-python scripts/emmnet.py info                                      # 자동 감지된 데이터/GPU/출력 폴더 확인 (init 불필요)
-python scripts/emmnet.py setup --install-torch                     # 환경 설치/검증
-python scripts/emmnet.py check                                     # 데이터 점검
-python scripts/emmnet.py train base2                               # 학습(백그라운드) + train/val 평가
-python scripts/emmnet.py status                                    # 진행/요약
-python scripts/emmnet.py sweep                                     # lr sweep (GPU 자동 분배)
-python scripts/emmnet.py final --lr <선택값>                        # 시드 3개 최종 학습
-python scripts/emmnet.py test final_s0 final_s1 final_s2           # test 1회 + 평균±표준편차
+# v1: 기본 어댑터 (512 -> 128 -> 2, Focal Loss)
+python3 train_adapter.py
+
+# v2: 개선 어댑터 (L2 Norm + MRI Oversampling + Residual Skip-Connection + Weighted CE)
+python3 train_adapter_v2.py
 ```
-경로/GPU는 자동 감지(데이터: `EMMNET_DATA`→YAML `out_dir`→`data/processed`→서버 디스크 스캔, GPU: 비어 있는 것, 출력: `checkpoints/`). 후보가 여러 개일 때만 `init --data`로 지정.
-중단(재부팅/kill/OOM) 시 같은 명령을 다시 실행하면 `resume.pth`에서 이어서 학습한다. SSH 끊김은 학습에 영향 없음.
-개별 스크립트(`run_experiment.sh`, `evaluate_mri_encoder.py`, `analyze_results.py` 등)와 `--set key=value` override는 런북 참조.
+
+학습이 완료되면 검증 성능 기준 최적 체크포인트(`adapter_best.pt` 또는 `adapter_v2_best.pt`)가 저장되며, Test 세트 기준 Accuracy, Sensitivity(Abnormal 검출률), Precision, F1-Score가 출력된다.
+
+---
 
 ## 폴더 구조
 
-```
+```text
 emmnet/
 ├── pyproject.toml, conftest.py
-├── configs/            mri_dataset.yaml (전처리), mri_encoder.yaml (학습)
-├── scripts/
-│   ├── emmnet.py               서버 작업 자동화 CLI(init/setup/check/train/sweep/final/test/status)
-│   ├── preprocess_mri.py       ADNI NIfTI -> 256^3 .npy + manifest
-│   ├── check_mri_dataset.py    분할/누수/제외사유/QC 미리보기
-│   ├── cache_norm_stats.py     percentile_zscore 통계 캐시, fg_frac 경고
-│   ├── make_subset.py          스모크용 subset(파일 복사)
-│   ├── profile_memory.py       GPU 메모리 측정 -> micro_batch_size 결정
-│   ├── train_mri_encoder.py    학습 CLI
-│   ├── run_experiment.sh       학습 + train/val 평가 래퍼(로그/설정/git sha 저장)
-│   ├── evaluate_mri_encoder.py 평가 CLI (학습 당시 config, val 기반 임계값, test 1회 잠금)
-│   └── analyze_results.py      결과 분석(analysis.json, curves.png)
+├── train_adapter.py                # 멀티모달 어댑터 학습 v1 (Focal Loss, 2-Layer MLP)
+├── train_adapter_v2.py             # 멀티모달 어댑터 학습 v2 (L2 Norm, Oversampling, Residual Adapter)
+├── test_fusion.py                  # EEG + MRI 퓨전 모델 더미 텐서 통합 테스트
+├── configs/                        # mri_dataset.yaml, mri_encoder.yaml
+├── data/                           # 추출된 256-D 특징 파일 (eeg_features_*.npz, mri_features_*.npz) — git 미추적
+├── scripts/                        # MRI 서버 자동화 CLI 및 전처리/학습/평가 스크립트
 ├── src/
-│   ├── data/mri_dataset.py     전처리 + MRIDataset(subject 누수 검사, Med3D 정규화)
-│   ├── models/mri/             resnet3d.py (backbone), mri_encoder.py (+projection, Med3D 로더), classifier.py (linear probe)
-│   ├── training/               trainer.py (단일 GPU, AMP, grad accum), losses.py (binary focal)
-│   ├── evaluation/             evaluate.py, metrics.py, cam.py
-│   ├── utils/                  config.py (--set/EMMNET_DATA), runinfo.py (git 메타, test 잠금)
-│   └── models/{eeg_encoder,fusion}.py, data/eeg_dataset.py   스텁
-├── tests/              encoder / training pipeline / tooling / CAM
+│   ├── data/
+│   │   ├── mri_dataset.py          # ADNI 전처리 + MRIDataset (subject 누수 검사)
+│   │   └── eeg_dataset.py          # CAUEEG 데이터셋
+│   ├── models/
+│   │   ├── mri/                    # resnet3d.py, mri_encoder.py (+256D proj, Med3D 로더), classifier.py
+│   │   ├── eeg_encoder.py          # 1D ResNet-18 기반 Age-conditioned EEG Encoder (256-D)
+│   │   └── fusion.py               # EMMNetFusion (Mid-level 512-D Concat + Adapter)
+│   ├── training/                   # trainer.py, losses.py
+│   ├── evaluation/                 # evaluate.py, metrics.py, cam.py
+│   └── utils/                      # config.py, runinfo.py
+├── tests/                          # 단위 테스트 (encoder / training / fusion)
 ├── docs/SERVER_RUNBOOK.md
-└── pretrained/         Med3D 가중치(**git 미추적**, 용량 때문에 서버로 직접 복사). 사용: resnet_18.pth (resnet_18_23dataset.pth는 해시가 달라 미사용, 보관)
+└── pretrained/                     # Med3D 가중치 (resnet_18.pth) — git 미추적
 ```
-`checkpoints/`, `data/processed/`, `outputs/`, `pretrained/*.pth`는 git 미추적.
 
-## 논문 채택/이탈 요약
+`checkpoints/`, `data/`, `outputs/`, `pretrained/*.pth`, `*.pt` 가중치 파일은 git 미추적.
 
-채택 [EMMNet]:
-- 전처리 최소화(skull strip/bias/공간정합 생략) 및 zero-padding 후 256³ resize, min-max [0,1] 저장 — Sec 3.1, p.283
-- 3D ResNet-18 + projection(n=256), Med3D 사전학습 — Sec 3.2 p.284, Sec 4.2 p.286
-- AdamW(0.9, 0.999), cosine decay + warmup, batch 16(effective), focal α=0.25 γ=2 — Sec 4.2 p.286, Eq.(1) p.285
-- abnormal(MCI/AD)을 positive로 지표 계산, subject 단위 분할 — Table 3 p.287, Sec 4.1 p.285
+---
 
-이탈(의도적):
-- **학습 입력 정규화**: percentile 0.5~99.5 truncation 후 z-score(Med3D 사전학습과 동일, 전경 `volume>0` 기준·배경 0). 논문은 min-max. `--set data.normalization=minmax`로 대조 실험.
-- 학습 샘플 4,000개 [Sec 4.2]와 balanced test set [Sec 4.1]은 따르지 않음(ADNI 규모/층화 분할 사용).
-- 단일 GPU 학습(논문 dual RTX 4090).
+## 초기 실험 결과 (Unpaired Multimodal Adapter)
 
-논문에 없는 팀 기본값: lr 1e-4, weight decay 1e-2, epochs 50, warmup 2, head lr ×10, grad clip 1.0, early stopping 10, bf16 AMP, 모델 선택=val AUC 최대, 임계값=val Youden J (출처 표는 런북 6절).
+| 모델 버전 | 주요 설정 | Test Sensitivity (Abnormal) | Test Precision | Test F1-Score |
+| --- | --- | --- | --- | --- |
+| **Adapter v1** (`train_adapter.py`) | 2-Layer MLP, Focal Loss ($\alpha=0.25, \gamma=2.0$), MRI 수 기준 매칭 | 43.18% | 90.48% | - |
+| **Adapter v2** (`train_adapter_v2.py`) | Residual Adapter, 모달리티별 $L_2$ Norm, Train MRI Oversampling, Weighted CE (`[1.5, 1.0]`), CosineAnnealingLR | **79.55%** | - | **76.92%** |
 
-참고 수치: MRI-only 33.3M params / Acc 34.86% [Table 4, p.287]는 joint 학습에서 분리한 값이라 목표로 삼지 않음. 구현 파라미터는 encoder(proj 256) 33.12M으로 0.18M 차이가 있으며 원인은 확인되지 않음(논문의 projection 상세는 미기재).
+- **v1 한계**: Precision은 높으나 실제 비정상 환자를 정상으로 놓치는 위음성(False Negative)이 많아 민감도가 낮음.
+- **v2 개선**: 모달리티 간 스케일 불균형을 $L_2$ 정규화로 완화하고, 학습 시 EEG 전체 샘플을 활용하도록 MRI Oversampling 및 클래스 가중치를 적용하여 민감도(79.55%)와 F1-Score(76.92%)를 EMMNet 논문 벤치마크(Table 4: Sensitivity 77.37%) 수준으로 끌어올림.
+
+---
+
+## 논문 채택 / 이탈 요약
+
+### 채택 [EMMNet]
+- **MRI**: 전처리 최소화(skull strip/bias/공간정합 생략), zero-padding 후 $256^3$ resize, 3D ResNet-18 + 256-D projection (Med3D 사전학습) — Sec 3.1~3.2, Sec 4.2
+- **EEG**: 200 Hz 리샘플링, 10초 구간(2,000 타임스텝) 크로핑, 환자 나이(Age) 추가 채널 결합, 1D ResNet-18 + 256-D 출력 — Sec 3.1~3.2
+- **융합 방식**: Mid-level Feature Concatenation (`256 + 256 = 512`) — Table 5, p.288
+- **평가 기준**: Abnormal(MCI/AD)을 Positive로 지정, Subject 단위 분할(Data Leakage 방지) — Table 3, Sec 4.1
+
+### 이탈 (의도적 / 환경 제약)
+- **Unpaired 코호트 및 Decoupled Late Fusion**: 동일 환자의 Paired EEG-MRI 데이터(CAUEMM) 부재로 인해 CAUEEG와 ADNI를 클래스 라벨(Normal=0, Abnormal=1) 기준으로 매칭(Class-Conditional Pairing)하고, 사전 학습된 인코더를 고정한 채 경량 어댑터만 학습.
+- **v2 손실 함수 및 정규화**: Focal Loss($\alpha=0.25, \gamma=2.0$) 대신 클래스 불균형과 모달리티 스케일 차이를 완화하기 위해 $L_2$ 정규화 및 가중치 CrossEntropyLoss(`weight=[1.5, 1.0]`) 적용.
+- **MRI 입력 정규화**: Med3D 사전학습 환경에 맞춰 percentile 0.5~99.5 truncation 후 z-score 적용(`--set data.normalization=minmax`로 대조 가능).
+
+---
 
 ## 미해결 / TODO
 
-- [ ] 베이스라인 결과 분석(곡선 진단, test AUC CI, age-only AUC 등) → val AUC가 0.5를 의미 있게 넘으면 lr sweep, 이후 시드 3개 최종 평가
-- [ ] 라벨 검증(진단 변경자, Screening 진단과 researchGroup 일치), 시각 QC, 전경비율(`fg_frac`) 확인
-- [ ] percentile_zscore vs minmax 비교
-- [ ] 서버 torch 설치 방법 런북에 기록, 서버 pytest 재확인
-- [ ] EEG encoder, fusion(mid-level concat이 논문 채택안, Table 5 p.288) — 담당자 배정 후
-- [ ] 원 저장소 접근 권한 확보 시 구조/가중치 재검증
+- [ ] Paired 데이터셋(또는 동일 코호트) 확보 시 End-to-End 공동 학습(Joint Training) 및 성능 비교
+- [ ] Adapter v2 기준 Test Accuracy / Precision / ROC-AUC 및 다중 시드 평균±표준편차 기록 보완
+- [ ] 이진 분류(Normal vs Abnormal)에서 3분류(CN / MCI / Dementia)로의 어댑터 확장
+- [ ] EEG 인코더 5 에포크 이상 풀 학습 체크포인트 기반 특징 재추출 및 어댑터 재평가
+- [ ] MRI 라벨 검증(`label_verified`), 시각 QC, `percentile_zscore` vs `minmax` 비교
+- [ ] 원 저자 저장소 접근 권한 확보 시 아키텍처 및 가중치 재검증
